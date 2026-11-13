@@ -62,10 +62,10 @@ pub struct FindSettings {
 }
 impl Default for FindSettings {
     fn default() -> Self {
-        // Tuned on the O4 Pro motocross chase (ICM-40609-D, 03/2026): 40 deg/s over 5 s finds exactly its worst stretch,
-        // 1:10 to 1:30, as one (it has a calmer 3.5 s in the middle), while the Gyrogate bursts it has all through stay
-        // with the repaired motion data
-        Self { margin_s: 0.5, merge_gap_s: 4.0, shake_rms_dps: 40.0, sustain_s: 5.0 }
+        // Tuned on the O4 Pro motocross chase (ICM-40609-D, 03/2026): 30 deg/s over 5 s finds its worst stretch, 1:10 to
+        // 1:30, as one (it has a calmer 3.5 s in the middle), and the other stretches its pilot found still jumping with
+        // the gyro corrections, while the Gyrogate bursts it has all through the calm parts stay with the repaired data
+        Self { margin_s: 0.5, merge_gap_s: 4.0, shake_rms_dps: 30.0, sustain_s: 5.0 }
     }
 }
 
