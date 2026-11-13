@@ -1,41 +1,34 @@
-<p align="center">
-  <h1 align="center">
-    <a href="https://github.com/gyroflow/gyroflow#gh-light-mode-only">
-      <img src="./resources/logo_black.svg" alt="Gyroflow logo" height="100">
-    </a>
-    <a href="https://github.com/gyroflow/gyroflow#gh-dark-mode-only">
-      <img src="./resources/logo_white.svg" alt="Gyroflow logo" height="100">
-    </a>
-  </h1>
+# SP Drone Stab
 
-  <p align="center">
-    Video stabilization using gyroscope data
-    <br/>
-    <br/>
-    <a href="https://gyroflow.xyz">Homepage</a> •
-    <a href="https://github.com/gyroflow/gyroflow/releases">Download</a> •
-    <a href="https://docs.gyroflow.xyz">Documentation</a> •
-    <a href="https://discord.gg/YaUtNpWTUh">Discord</a> •
-    <a href="https://github.com/gyroflow/gyroflow/issues">Report bug</a> •
-    <a href="https://github.com/gyroflow/gyroflow/issues">Request feature</a>
-  </p>
-  <p align="center">
-    <a href="https://github.com/gyroflow/gyroflow/releases">
-      <img src="https://img.shields.io/github/downloads/gyroflow/gyroflow/total" alt="Downloads">
-    </a>
-    <a href="https://github.com/gyroflow/gyroflow/graphs/contributors">
-      <img src="https://img.shields.io/github/contributors/gyroflow/gyroflow?color=dark-green" alt="Contributors">
-    </a>
-    <a title="Crowdin" target="_blank" href="https://crowdin.com/project/gyroflow"><img src="https://badges.crowdin.net/gyroflow/localized.svg">
-    </a>
-    <a href="https://github.com/gyroflow/gyroflow/issues/">
-      <img src="https://img.shields.io/github/issues/gyroflow/gyroflow" alt="Issues">
-    </a>
-    <a href="https://github.com/gyroflow/gyroflow/blob/master/LICENSE">
-      <img src="https://img.shields.io/github/license/gyroflow/gyroflow" alt="License">
-    </a>
-  </p>
-</p>
+Free, open-source video stabilization for FPV pilots, built on [Gyroflow](https://github.com/gyroflow/gyroflow) 1.7.0.
+
+SP Drone Stab is a fork. It keeps everything Gyroflow 1.7.0 does (optical correction, optical-only stabilization,
+GPU optical sync, Optimal path smoothing, AV1 export...) and adds tools aimed at FPV footage:
+
+- **DJI O4 Gyrogate detection and repair.** DJI O4 Pro units built since February 2026, and every O4 Lite, use the
+  ICM-40609-D gyro, which records false rotations under motor vibration. SP Drone Stab reads the unit's production date
+  from the serial number in the clip, tells you whether it likely has that gyro, counts the false rotations and the
+  single-axis tremor in the clip, and removes them from the motion data before stabilization. It works on the 1 kHz
+  attitude data only, so it takes a fraction of a second and doesn't decode the video. It can also save a corrected
+  copy of the clip (`<name>_gyrofix.MP4`).
+
+Planned: running the optical correction only where the Gyrogate repair finds a problem, instead of on the whole clip.
+
+**Please don't take SP Drone Stab problems to the Gyroflow project.** Open an issue
+[here](https://github.com/fpvnicolas-byte/sp-drone-stab/issues) instead.
+
+### Credits
+
+- The stabilization engine and almost all of the app: [Gyroflow](https://github.com/gyroflow/gyroflow), by Adrian Eddy
+  and contributors (GPL-3.0-or-later).
+- The Gyrogate detection and repair (`src/core/gyrogate`): ported from [FPVFlow](https://github.com/rodrigosclosa/fpvflow)
+  by Rodrigo Sclosa (GPL-3.0-or-later), which ports [o4fix](https://github.com/vadimbryl/o4fix) by vadimbryl (MIT).
+
+SP Drone Stab is licensed under GPLv3, like Gyroflow, with the same additional permission allowing linking with mdk-sdk.
+
+---
+
+The rest of this document is Gyroflow's README.
 
 ## About the project
 Gyroflow is an application that can stabilize your video by using motion data from a gyroscope and optionally an accelerometer. Modern cameras record that data internally (GoPro, Sony, Insta360 etc), and this application stabilizes the captured footage precisely by using them. It can also use gyro data from an external source (eg. from Betaflight blackbox).
