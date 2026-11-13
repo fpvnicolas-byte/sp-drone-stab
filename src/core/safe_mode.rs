@@ -53,14 +53,19 @@ pub struct FindSettings {
     /// Stretches closer than this are merged, seconds: switching back and forth looks worse than staying in safe mode
     pub merge_gap_s: f64,
     /// RMS of the angular rate above `SHAKE_HIGHPASS_HZ`, over `SHAKE_WINDOW_S`, from which a moment counts as shake,
-    /// deg/s. 0 turns the generic shake detector off
+    /// deg/s. 0 turns the detector off
     pub shake_rms_dps: f64,
+    /// How long the shake must keep up, seconds: a stretch is where its average over this long is above
+    /// `shake_rms_dps`. Single jolts and the short false rotations of the O4 gyro stay with the motion data (the
+    /// Gyrogate repair handles those); a long violent stretch, where the repaired motion still wobbles, goes to the image
+    pub sustain_s: f64,
 }
 impl Default for FindSettings {
     fn default() -> Self {
-        // `shake_rms_dps` is a first guess, to be tuned on real clips (the O4 Pro motocross chase is the reference): high
-        // enough that the vibration of a well-tuned quad on a soft mount stays under it
-        Self { margin_s: 0.5, merge_gap_s: 1.0, shake_rms_dps: 60.0 }
+        // Tuned on the O4 Pro motocross chase (ICM-40609-D, 03/2026): 40 deg/s over 5 s finds exactly its worst stretch,
+        // 1:10 to 1:30, as one (it has a calmer 3.5 s in the middle), while the Gyrogate bursts it has all through stay
+        // with the repaired motion data
+        Self { margin_s: 0.5, merge_gap_s: 4.0, shake_rms_dps: 40.0, sustain_s: 5.0 }
     }
 }
 
@@ -68,18 +73,21 @@ impl Default for FindSettings {
 const SHAKE_HIGHPASS_HZ: f64 = 15.0;
 const SHAKE_WINDOW_S: f64 = 0.25;
 
-/// The stretches of `data` whose motion data is unreliable, in time order, without overlaps. `gyrogate` are the
-/// settings of the DJI O4 detector, `None` where it doesn't apply (another camera, or a unit with the old gyro). Empty
-/// for clean motion data
+/// The stretches of `data` whose motion data is unreliable, in time order, without overlaps: where it shakes hard for
+/// a long time. `gyrogate` are the settings of the DJI O4 detector, `None` where it doesn't apply (another camera, or a
+/// unit with the old gyro); its false rotations and tremor inside a stretch are named among its reasons. Empty for
+/// clean motion data
 pub fn find(data: &TimeQuat, gyrogate: Option<&gyrogate::Settings>, settings: &FindSettings) -> Vec<Stretch> {
-    let mut marks: Vec<(i64, i64, Reason)> = Vec::new();
+    if settings.shake_rms_dps <= 0.0 { return Vec::new(); }
+    let mut found = merge(shake_marks(data, settings.shake_rms_dps, settings.sustain_s), data, settings);
     if let Some(gs) = gyrogate {
-        marks.extend(gyrogate_marks(data, gs));
+        for (a, b, reason) in gyrogate_marks(data, gs) {
+            for s in found.iter_mut().filter(|s| a <= s.end_us && b >= s.start_us) {
+                if !s.reasons.contains(&reason) { s.reasons.push(reason); s.reasons.sort(); }
+            }
+        }
     }
-    if settings.shake_rms_dps > 0.0 {
-        marks.extend(shake_marks(data, settings.shake_rms_dps));
-    }
-    merge(marks, data, settings)
+    found
 }
 
 /// The Gyrogate detector's bursts and tremor as time ranges, on the 1 kHz O4 attitude track only
@@ -101,7 +109,24 @@ fn gyrogate_marks(data: &TimeQuat, settings: &gyrogate::Settings) -> Vec<(i64, i
 }
 
 /// Moments of strong high-frequency shake, from the orientations at whatever rate they come
-fn shake_marks(data: &TimeQuat, threshold_dps: f64) -> Vec<(i64, i64, Reason)> {
+fn shake_marks(data: &TimeQuat, threshold_dps: f64, sustain_s: f64) -> Vec<(i64, i64, Reason)> {
+    let profile = shake_profile(data);
+    if profile.len() < 2 { return Vec::new(); }
+    let rate_hz = (profile.len() - 1) as f64 / ((profile[profile.len() - 1].0 - profile[0].0) as f64 / 1e6);
+    let level: Vec<f64> = profile.iter().map(|p| p.1).collect();
+    let sustained = running_mean_scalar(&level, ((sustain_s * rate_hz).round() as usize).max(1));
+    let mask: Vec<bool> = sustained.iter().map(|&v| v > threshold_dps).collect();
+    // Each sustained run, from its first to its last shaking moment: the averaging spreads it past both
+    runs(&mask).into_iter().filter_map(|(a, b)| {
+        let first = (a..=b).find(|&i| level[i] > threshold_dps)?;
+        let last = (a..=b).rev().find(|&i| level[i] > threshold_dps)?;
+        Some((profile[first].0, profile[last].0, Reason::Shake))
+    }).collect()
+}
+
+/// The shake level over time: the RMS of the angular rate above `SHAKE_HIGHPASS_HZ` over `SHAKE_WINDOW_S`, deg/s,
+/// at each distinct sample. Empty when the data is too short or too slow to tell
+pub fn shake_profile(data: &TimeQuat) -> Vec<(i64, f64)> {
     let samples: Vec<(i64, &Quat64)> = data.iter().map(|(t, q)| (*t, q)).collect();
     // Body rates between distinct samples (stored duplicates carry no motion)
     let mut rates: Vec<(i64, Vector3<f64>)> = Vec::with_capacity(samples.len());
@@ -126,9 +151,7 @@ fn shake_marks(data: &TimeQuat, threshold_dps: f64) -> Vec<(i64, i64, Reason)> {
     let low = running_mean(&rates.iter().map(|r| r.1).collect::<Vec<_>>(), lp);
     let hf2: Vec<f64> = rates.iter().zip(&low).map(|(r, l)| (r.1 - l).norm_squared()).collect();
     let window = ((SHAKE_WINDOW_S * rate_hz).round() as usize).max(1);
-    let rms: Vec<f64> = running_mean_scalar(&hf2, window).into_iter().map(f64::sqrt).collect();
-    let mask: Vec<bool> = rms.iter().map(|&v| v > threshold_dps).collect();
-    runs(&mask).into_iter().map(|(a, b)| (rates[a].0, rates[b].0, Reason::Shake)).collect()
+    running_mean_scalar(&hf2, window).into_iter().zip(&rates).map(|(v, r)| (r.0, v.sqrt())).collect()
 }
 
 /// The inclusive index ranges where `mask` is set
@@ -304,17 +327,10 @@ mod tests {
     }
 
     #[test]
-    fn false_rotations_are_marked_with_a_margin_and_merged() {
-        // Two bursts 0.6 s apart become one stretch, a third one 3 s later another
+    fn isolated_false_rotations_stay_with_the_repaired_motion_data() {
+        // The Gyrogate repair takes care of these: running the image analysis for each would only cost time
         let data = o4_track(8.0, &[2000, 2600, 5600]);
-        let found = find(&data, Some(&Default::default()), &Default::default());
-        assert_eq!(found.len(), 2, "{found:?}");
-        assert!(found[0].start_us <= 1_500_000 && found[0].start_us >= 1_400_000, "{found:?}");
-        assert!(found[0].end_us >= 3_100_000 && found[0].end_us <= 3_200_000, "{found:?}");
-        assert!(found[1].start_us <= 5_100_000 && found[1].end_us >= 6_100_000, "{found:?}");
-        assert!(found.iter().all(|s| s.reasons.contains(&Reason::FalseRotations)));
-        let s = summary(&found);
-        assert_eq!(s["count"], 2);
+        assert!(find(&data, Some(&Default::default()), &Default::default()).is_empty());
     }
 
     #[test]
@@ -337,6 +353,18 @@ mod tests {
         assert_eq!(found[0].reasons, vec![Reason::Shake]);
         assert!(found[0].start_us <= 3_000_000 && found[0].start_us >= 2_300_000, "{found:?}");
         assert!(found[0].end_us >= 5_000_000 && found[0].end_us <= 5_700_000, "{found:?}");
+        assert_eq!(summary(&found)["count"], 1);
+    }
+
+    #[test]
+    fn a_short_jolt_is_not_a_stretch() {
+        // The same shake for a quarter second: the motion data can be trusted with it
+        let data: TimeQuat = (0..2000).map(|i| {
+            let t = i as f64 / 200.0;
+            let shake = if (3.0..3.25).contains(&t) { 1.5f64.to_radians() * (2.0 * std::f64::consts::PI * 40.0 * t).sin() } else { 0.0 };
+            ((t * 1e6) as i64, Quat64::from_euler_angles(shake, 0.3 * t, 0.0))
+        }).collect();
+        assert!(find(&data, None, &Default::default()).is_empty());
     }
 
     fn path(seconds: f64, hz: f64, f: impl Fn(f64) -> Quat64) -> TimeQuat {
@@ -394,5 +422,42 @@ mod tests {
         assert!(!splice(&mut quats, 500_000, 1_000_000, &TimeQuat::new()));
         let same = quats.clone();
         assert!(!splice(&mut quats, 1_000_000, 500_000, &same));
+    }
+
+    /// Prints the shake level and the stretches found on a real clip, to tune the thresholds. Run with
+    /// `SPDS_CLIP=<file> cargo test -p gyroflow-core --release safe_mode_on_a_real_clip -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn safe_mode_on_a_real_clip() {
+        use std::sync::{ Arc, atomic::AtomicBool };
+        use crate::gyro_source::{ GyroSource, FileLoadOptions };
+        let Ok(clip) = std::env::var("SPDS_CLIP") else { return; };
+        let path = std::path::Path::new(&clip);
+        let mut file = std::fs::File::open(path).unwrap();
+        let size = file.metadata().unwrap().len();
+        let md = GyroSource::parse_telemetry_file(&mut file, size, path, &FileLoadOptions::default(), (3840, 2160), 60.0, |_| (), Arc::new(AtomicBool::new(false))).unwrap();
+        let unit = gyrogate::unit::classify(&md.additional_data);
+        println!("unit: {unit:?}");
+        let data = md.quaternions;
+        println!("{} attitude samples, {:.1} s", data.len(), data.keys().last().map_or(0.0, |&t| (t - data.keys().next().unwrap()) as f64 / 1e6));
+
+        let t0 = *data.keys().next().unwrap();
+        let profile = shake_profile(&data);
+        let mut per_s: std::collections::BTreeMap<i64, (f64, f64, usize)> = Default::default();
+        for &(t, v) in &profile {
+            let e = per_s.entry((t - t0) / 1_000_000).or_insert((0.0, 0.0, 0));
+            e.0 = e.0.max(v); e.1 += v; e.2 += 1;
+        }
+        println!("second: max / mean shake RMS (deg/s)");
+        for (s, (mx, sum, n)) in &per_s { println!("{s:4} {mx:7.1} {:7.1}", sum / *n as f64); }
+
+        let gs = gyrogate::Settings::default();
+        let rel = |t: i64| (t - t0) as f64 / 1e6;
+        if let Some(sum) = gyrogate::memory::analyze(&data, &gs) { println!("gyrogate: {sum:?}"); }
+        for threshold in [30.0, 40.0, 50.0, 60.0] {
+            let found = find(&data, Some(&gs), &FindSettings { shake_rms_dps: threshold, ..Default::default() });
+            let list: Vec<String> = found.iter().map(|s| format!("{:.1}-{:.1} {:?}", rel(s.start_us), rel(s.end_us), s.reasons)).collect();
+            println!("threshold {threshold}: {} stretches, {:.1} s: {}", found.len(), found.iter().map(Stretch::duration_s).sum::<f64>(), list.join(", "));
+        }
     }
 }
