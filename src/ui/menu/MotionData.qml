@@ -11,7 +11,7 @@ MenuItem {
     id: root;
     text: qsTr("Motion data");
     iconName: "chart";
-    loader: controller.loading_gyro_in_progress || root.gyrogateBusy;
+    loader: controller.loading_gyro_in_progress || root.gyrogateBusy || root.safeModeBusy;
     objectName: "motiondata";
 
     property alias hasQuaternions: integrator.hasQuaternions;
@@ -31,6 +31,12 @@ MenuItem {
     property real gyrogateProgress: 0;
     // The clip the corrected copy is being written for, to apply it only if still loaded
     property string gyrogateCopyFor: "";
+    // SP Drone Stab safe mode: the stretches whose motion data is unreliable (found at load time) and what the image
+    // analysis of them gave (`controller.safe_mode_info()`), see `safe_mode.rs`
+    property var safeModeFound: null;
+    property var safeModeInfo: null;
+    property bool safeModeBusy: false;
+    property real safeModeProgress: 0;
     readonly property bool gyrogateRecommended: !!gyrogate && !!gyrogate.summary && (gyrogate.summary.bursts > 0 || gyrogate.summary.tremor_seconds > 0)
                                                 && gyrogate.unit.chip != "mp66" && !gyrogate.repaired_copy;
 
@@ -172,6 +178,12 @@ MenuItem {
             if (is_main_video && root.gyrogateRecommended && !root.opened) {
                 root.opened = true;
                 gyrogateRevealTimer.start();
+            }
+            // Safe mode measures the shaky stretches from the image by itself, once the video is ready
+            root.safeModeInfo = null;
+            root.safeModeFound = additional_data.safe_mode || null;
+            if (is_main_video && safeModecb.checked && root.safeModeFound && root.safeModeFound.count > 0) {
+                safeModeTimer.start();
             }
             controller.set_optical_correction_strength(opticalStrength.value / 100);
             controller.set_optical_correction_per_frame(opticalPerFrame.currentIndex === 1);
@@ -492,6 +504,71 @@ MenuItem {
                 delete obj.gyro_source.file_metadata;
                 obj.gyro_source.gyrogate_filter = false;
                 window.videoArea.loadGyroflowData(obj, render_queue.editing_job_id);
+            }
+        }
+    }
+    Timer {
+        id: safeModeTimer;
+        interval: 1500; // After the video's first frames are decoded
+        onTriggered: {
+            root.safeModeBusy = true;
+            root.safeModeProgress = 0;
+            controller.analyze_safe_mode();
+        }
+    }
+    Connections {
+        target: controller;
+        function onSafe_mode_progress(percent: real): void { root.safeModeProgress = percent; }
+        function onSafe_mode_changed(): void {
+            root.safeModeBusy = false;
+            try { root.safeModeInfo = JSON.parse(controller.safe_mode_info()); } catch (e) { root.safeModeInfo = null; }
+        }
+    }
+    Column {
+        id: safeModeSection;
+        width: parent.width;
+        spacing: 5 * dpiScale;
+        visible: !!root.safeModeFound && root.safeModeFound.count > 0;
+
+        function reasonsText(reasons: var): string {
+            const names = (reasons || []).map(r => r == "false_rotations"? qsTr("false rotations of the gyro")
+                                                : r == "tremor"? qsTr("gyro tremor")
+                                                : qsTr("strong shake"));
+            return names.join(", ");
+        }
+        function text(): string {
+            const found = root.safeModeFound;
+            if (!found) return "";
+            if (root.safeModeBusy) return qsTr("Shaky stretches found: stabilizing them from the image... %1%").arg(Math.round(root.safeModeProgress * 100));
+            const info = root.safeModeInfo;
+            const where = qsTr("%n stretch(es), %1 s in total (%2).", "", found.count).arg(found.seconds.toFixed(1)).arg(reasonsText(found.reasons));
+            if (!info) return qsTr("The motion data is unreliable in %1").arg(where);
+            if (!info.enabled) return qsTr("Safe mode is off. The motion data is unreliable in %1").arg(where);
+            const measured = info.stretches.filter(s => s.measured).length;
+            let t = qsTr("Safe mode: the motion data was unreliable in %1 These stretches are stabilized from the image instead, the rest of the clip with the motion data.").arg(where);
+            if (measured < info.stretches.length) {
+                t += " " + qsTr("%n stretch(es) had too little detail to track (sky, water) and keep the motion data.", "", info.stretches.length - measured);
+            }
+            return t;
+        }
+
+        InfoMessageSmall {
+            show: safeModeSection.visible;
+            type: InfoMessage.Info;
+            text: safeModeSection.text();
+        }
+        CheckBoxWithContent {
+            id: safeModecb;
+            text: qsTr("Safe mode: stabilize shaky stretches from the image");
+            checked: true;
+            tooltip: qsTr("Where the motion data can't be trusted (false rotations of a DJI O4 gyro, gyro tremor or strong shake), the camera motion is measured from the video itself in those stretches only, like \"Ignore motion data from the file\" does for a whole clip. The rest of the clip keeps the motion data, so it stays fast.");
+            onCheckedChanged: {
+                if (!root.safeModeInfo && checked && root.safeModeFound && root.safeModeFound.count > 0 && !root.safeModeBusy) {
+                    safeModeTimer.interval = 1;
+                    safeModeTimer.start();
+                } else {
+                    controller.set_safe_mode_enabled(checked);
+                }
             }
         }
     }

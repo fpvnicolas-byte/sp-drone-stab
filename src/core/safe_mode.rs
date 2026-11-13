@@ -224,6 +224,45 @@ pub fn splice(quats: &mut TimeQuat, start_us: i64, end_us: i64, video: &TimeQuat
     true
 }
 
+/// The motion measured from the image in each stretch, as `GyroSource::integrate` splices it in
+#[derive(Clone, Debug, Default)]
+pub struct SafeModeMotion {
+    /// Off: the stretches and their motion are kept (the timeline still shows them), but the motion data is used as is
+    pub enabled: bool,
+    pub stretches: Vec<Stretch>,
+    /// The orientations measured from the image for each stretch, on the motion data's timeline. `None` for a stretch
+    /// the image couldn't be tracked in: the motion data stays there
+    pub video: Vec<Option<TimeQuat>>,
+}
+impl SafeModeMotion {
+    /// Splices every stretch with motion from the image into `quats`. Returns how many were
+    pub fn apply(&self, quats: &mut TimeQuat) -> usize {
+        if !self.enabled || quats.len() < 2 { return 0; }
+        self.stretches.iter().zip(&self.video)
+            .filter(|(s, v)| v.as_ref().is_some_and(|v| splice(quats, s.start_us, s.end_us, v)))
+            .count()
+    }
+    pub fn hash_into(&self, hasher: &mut impl std::hash::Hasher) {
+        hasher.write_u8(self.enabled as u8);
+        for (s, v) in self.stretches.iter().zip(&self.video) {
+            hasher.write_i64(s.start_us);
+            hasher.write_i64(s.end_us);
+            hasher.write_usize(v.as_ref().map_or(0, |v| v.len()));
+        }
+    }
+}
+
+/// The orientations measured in a safe-mode analysis of one stretch (`OpticalMotionAnalysis::for_safe_mode`), on the
+/// motion data's timeline: the motion chained between the frames, refined by the correction fitted with `settings`,
+/// moved from the video's time by the sync offset there
+pub fn video_motion(m: &crate::synchronization::optical_motion::OpticalMeasurements, settings: &crate::gyro_source::OpticalCorrectionSettings, gyro: &crate::gyro_source::GyroSource) -> Result<TimeQuat, String> {
+    let correction = crate::synchronization::optical_motion::solve(m, settings)?;
+    if correction.video_base.len() < 2 { return Err("Not enough of the image could be tracked".into()); }
+    let mut quats = correction.base_quats();
+    correction.apply(&mut quats);
+    Ok(quats.into_iter().map(|(t, q)| (t - (gyro.offset_at_video_timestamp(t as f64 / 1000.0) * 1000.0).round() as i64, q)).collect())
+}
+
 /// A one-line summary for the UI, in English (translated in QML): how many stretches, how long, and why
 pub fn summary(stretches: &[Stretch]) -> serde_json::Value {
     let mut reasons: Vec<Reason> = stretches.iter().flat_map(|s| s.reasons.iter().copied()).collect();
@@ -327,6 +366,26 @@ mod tests {
         let worst = quats.range(2_000_000..=4_000_000).map(|(t, q)| q.angle_to(&truth(*t as f64 / 1e6)).to_degrees()).fold(0.0, f64::max);
         let wobble = before.range(2_000_000..=4_000_000).map(|(t, q)| q.angle_to(&truth(*t as f64 / 1e6)).to_degrees()).fold(0.0, f64::max);
         assert!(worst < 0.2 && wobble > 2.5, "after {worst}°, before {wobble}°");
+    }
+
+    #[test]
+    fn safe_mode_motion_splices_only_when_enabled_and_measured() {
+        let truth = |t: f64| Quat64::from_euler_angles(0.0, 0.4 * t, 0.0);
+        let wobble = |t: f64| if (1.0..3.0).contains(&t) { 0.05 * (2.0 * std::f64::consts::PI * 7.0 * t).sin() } else { 0.0 };
+        let quats = path(4.0, 1000.0, |t| truth(t) * Quat64::from_euler_angles(wobble(t), 0.0, 0.0));
+        let video = path(4.0, 30.0, truth);
+        let stretches = vec![
+            Stretch { start_us: 1_000_000, end_us: 3_000_000, reasons: vec![Reason::Shake] },
+            Stretch { start_us: 3_500_000, end_us: 3_900_000, reasons: vec![Reason::Tremor] },
+        ];
+        let mut motion = SafeModeMotion { enabled: false, stretches, video: vec![Some(video), None] };
+        let mut q = quats.clone();
+        assert_eq!(motion.apply(&mut q), 0);
+        assert!(q == quats);
+        motion.enabled = true;
+        assert_eq!(motion.apply(&mut q), 1);
+        let worst = q.range(1_000_000..=3_000_000).map(|(t, q)| q.angle_to(&truth(*t as f64 / 1e6)).to_degrees()).fold(0.0, f64::max);
+        assert!(worst < 0.1, "{worst}");
     }
 
     #[test]
