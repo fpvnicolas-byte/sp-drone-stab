@@ -1938,7 +1938,7 @@ impl Controller {
             this.updates_available(QString::from(version), QString::from(changelog))
         });
         core::run_threaded(move || {
-            if let Ok(Ok(body)) = ureq::get("https://api.github.com/repos/gyroflow/gyroflow/releases").call().map(|x| x.into_body().read_to_string()) {
+            if let Ok(Ok(body)) = ureq::get("https://api.github.com/repos/fpvnicolas-byte/sp-drone-stab/releases").call().map(|x| x.into_body().read_to_string()) {
                 if let Ok(v) = serde_json::from_str(&body) as serde_json::Result<serde_json::Value> {
                     if let Some(v) = v.as_array() {
                         for itm in v {
@@ -1969,6 +1969,10 @@ impl Controller {
     }
 
     fn check_server_message(&self) {
+        // SP Drone Stab: the announcements on api.gyroflow.xyz are written for the official Gyroflow app (its versions,
+        // its download links), so this build doesn't fetch them
+        const FETCH_GYROFLOW_SERVER_MESSAGES: bool = false;
+        if !FETCH_GYROFLOW_SERVER_MESSAGES { return; }
         let show = util::qt_queued_callback_mut(QPointer::from(self as &Self), |this, json: String| {
             this.server_message(QString::from(json))
         });
