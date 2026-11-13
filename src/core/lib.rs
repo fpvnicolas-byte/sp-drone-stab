@@ -4,6 +4,7 @@
 
 pub mod gyro_source;
 pub mod gyrogate;
+pub mod safe_mode;
 pub mod imu_integration;
 pub mod lens_profile;
 pub mod lens_profile_database;
