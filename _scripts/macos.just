@@ -329,6 +329,9 @@ deploy *param:
             codesign -vvvv --strict --options runtime --timestamp --force -s $SIGNING_FINGERPRINT $PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app
 
             codesign -vvvv --deep --verify $PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app
+        else
+            # No Developer ID: ad-hoc sign so the app still runs on Apple Silicon (the user must allow it in Privacy & Security)
+            codesign --force --deep -s - $PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app
         fi
 
         if [ -z "$DONT_BUILD_DMG" ]; then
