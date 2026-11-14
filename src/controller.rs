@@ -314,6 +314,11 @@ pub struct Controller {
     mp4_merge_progress: qt_signal!(percent: f64, error_string: QString, url: QString),
 
     save_gyrogate_copy: qt_method!(fn(&self, strength: f64)),
+    analyze_safe_mode: qt_method!(fn(&mut self)),
+    set_safe_mode_enabled: qt_method!(fn(&self, enabled: bool)),
+    safe_mode_info: qt_method!(fn(&self) -> QString),
+    safe_mode_changed: qt_signal!(),
+    safe_mode_progress: qt_signal!(percent: f64),
     gyrogate_copy_progress: qt_signal!(percent: f64, error_string: QString, url: QString, report: QString),
 
     is_nle_installed: qt_method!(fn(&self) -> bool),
@@ -967,7 +972,15 @@ impl Controller {
                     additional_obj.insert("sample_rate".to_owned(),       serde_json::to_value(gyroflow_core::gyro_source::GyroSource::get_sample_rate(&*file_metadata)).unwrap());
                     // DJI O4 units with the ICM-40609-D gyro record false rotations: say which gyro the unit likely has
                     // and how many false bursts and seconds of tremor the clip carries
-                    if let Some(unit) = gyroflow_core::gyrogate::unit::classify(&file_metadata.additional_data) {
+                    let unit = gyroflow_core::gyrogate::unit::classify(&file_metadata.additional_data);
+                    // SP Drone Stab safe mode: the stretches the image should stabilize, which the UI then measures
+                    {
+                        let gyrogate = unit.as_ref().filter(|u| u.chip != gyroflow_core::gyrogate::unit::Chip::Mp66)
+                            .map(|_| gyroflow_core::gyrogate::Settings::from_strength(gyro.imu_transforms.gyrogate_strength));
+                        let stretches = gyroflow_core::safe_mode::find(&file_metadata.quaternions, gyrogate.as_ref(), &Default::default());
+                        additional_obj.insert("safe_mode".to_owned(), gyroflow_core::safe_mode::summary(&stretches));
+                    }
+                    if let Some(unit) = unit {
                         let summary = gyroflow_core::gyrogate::memory::analyze(&file_metadata.quaternions, &Default::default());
                         additional_obj.insert("gyrogate".to_owned(), serde_json::json!({
                             "unit": unit,
@@ -2690,6 +2703,61 @@ impl Controller {
         });
         let sdkbase = gyroflow_core::settings::get_str("sdkBase", "");
         crate::external_sdk::install(&filename, &sdkbase, progress);
+    }
+
+    /// SP Drone Stab safe mode: measures the motion from the image in the stretches whose motion data is unreliable, and
+    /// splices it in there. Reports through `safe_mode_progress`, then `safe_mode_changed`; `safe_mode_info` has the result
+    fn analyze_safe_mode(&mut self) {
+        if self.optical_analysis_running { return; }
+        self.optical_analysis_running = true;
+        self.cancel_flag.store(false, SeqCst);
+        let progress = util::qt_queued_callback_mut(QPointer::from(self as &Self), |this, percent: f64| {
+            this.safe_mode_progress(percent);
+        });
+        let finished = util::qt_queued_callback_mut(QPointer::from(self as &Self), |this, result: Result<(usize, usize), String>| {
+            this.optical_analysis_running = false;
+            this.safe_mode_progress(1.0);
+            match result {
+                Ok((count, measured)) => {
+                    ::log::info!("Safe mode: {measured} of {count} stretch(es) stabilized from the image");
+                    this.stabilizer.invalidate_zooming();
+                    this.request_recompute();
+                    this.chart_data_changed();
+                }
+                Err(e) if e == "Cancelled" => { }
+                Err(e) => ::log::error!("Safe mode: {e}"),
+            }
+            this.safe_mode_changed();
+        });
+        let stabilizer = self.stabilizer.clone();
+        let cancel_flag = self.cancel_flag.clone();
+        core::run_threaded(move || {
+            finished(rendering::analyze_safe_mode(&stabilizer, cancel_flag, move |percent, _, _| progress(percent)));
+        });
+    }
+    fn set_safe_mode_enabled(&self, enabled: bool) {
+        self.stabilizer.set_safe_mode_enabled(enabled);
+        self.request_recompute();
+        self.chart_data_changed();
+        self.safe_mode_changed();
+    }
+    /// What safe mode did, as JSON for the UI: `enabled`, and per stretch its range (s), reasons and whether the image
+    /// could be tracked there. `null` before it ran
+    fn safe_mode_info(&self) -> QString {
+        let gyro = self.stabilizer.gyro.read();
+        let info = match gyro.safe_mode.as_deref() {
+            Some(s) => serde_json::json!({
+                "enabled": s.enabled,
+                "stretches": s.stretches.iter().zip(&s.video).map(|(st, v)| serde_json::json!({
+                    "start_s": st.start_us as f64 / 1e6,
+                    "end_s": st.end_us as f64 / 1e6,
+                    "reasons": st.reasons,
+                    "measured": v.is_some(),
+                })).collect::<Vec<_>>(),
+            }),
+            None => serde_json::Value::Null,
+        };
+        QString::from(info.to_string())
     }
 
     /// Write `<name>_gyrofix.<ext>` next to the motion data file with the DJI Gyrogate bursts and tremor removed. Reports

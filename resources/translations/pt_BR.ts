@@ -455,6 +455,10 @@ Se o seu computador tiver mais de uma GPU, selecione outra em &quot;Dispositivo 
       <source>Audio encoder couldn&apos;t process the input data. Try unchecking &quot;Export audio&quot; in Export settings.</source>
       <translation>O codificador de áudio não conseguiu processar os dados de entrada. Tente desmarcar &quot;Exportar áudio&quot; nas configurações de exportação.</translation>
     </message>
+    <message>
+      <source>Rendering to this output would write over %1, which it&apos;s rendered from. Choose another name or folder for the output.</source>
+      <translation>Renderizar nesta saída sobrescreveria %1, que é o arquivo de origem. Escolha outro nome ou pasta para a saída.</translation>
+    </message>
   </context>
   <context>
     <name>CalibrationTarget</name>
@@ -1740,6 +1744,188 @@ Você deseja enviar seu perfil?</translation>
       <source>Export project file (including processed gyro data)</source>
       <translation>Exportar arquivo de projeto (incluindo dados processados do giroscópio)</translation>
     </message>
+    <message>
+      <source>DJI O4 Lite: ICM-40609-D gyro, which records false rotations under vibration (DJI Gyrogate).</source>
+      <translation>DJI O4 Lite: giroscópio ICM-40609-D, que registra rotações falsas com vibração (DJI Gyrogate).</translation>
+    </message>
+    <message>
+      <source>DJI O4 Pro built in %1: most likely the new ICM-40609-D gyro, which records false rotations under vibration (DJI Gyrogate).</source>
+      <translation>DJI O4 Pro fabricada em %1: muito provavelmente com o giroscópio novo ICM-40609-D, que registra rotações falsas com vibração (DJI Gyrogate).</translation>
+    </message>
+    <message>
+      <source>DJI O4 Pro built in %1, when DJI was switching to the ICM-40609-D gyro: it may be affected by DJI Gyrogate.</source>
+      <translation>DJI O4 Pro fabricada em %1, quando a DJI estava trocando para o giroscópio ICM-40609-D: pode ter o DJI Gyrogate.</translation>
+    </message>
+    <message>
+      <source>DJI O4 Pro built in %1: original MP66 gyro, not affected by DJI Gyrogate.</source>
+      <translation>DJI O4 Pro fabricada em %1: giroscópio original MP66, sem o DJI Gyrogate.</translation>
+    </message>
+    <message>
+      <source>DJI O4 Pro with an unknown production date: it may be affected by DJI Gyrogate.</source>
+      <translation>DJI O4 Pro com data de fabricação desconhecida: pode ter o DJI Gyrogate.</translation>
+    </message>
+    <message>
+      <source>This is a corrected copy: its false rotations were already removed.</source>
+      <translation>Esta é uma cópia corrigida: as rotações falsas já foram removidas.</translation>
+    </message>
+    <message>
+      <source>No 1 kHz attitude data in this clip. Record with RockSteady and HorizonSteady off to be able to repair it.</source>
+      <translation>Este clipe não tem os dados de atitude de 1 kHz. Grave com RockSteady e HorizonSteady desligados para poder corrigi-lo.</translation>
+    </message>
+    <message>
+      <source>Dense single-axis tremor in %1 s of the clip.</source>
+      <translation>Tremor denso em um só eixo em %1 s do clipe.</translation>
+    </message>
+    <message>
+      <source>No false rotations found in this clip.</source>
+      <translation>Nenhuma rotação falsa encontrada neste clipe.</translation>
+    </message>
+    <message numerus="yes">
+      <source>%n short single-axis jolt(s) found. With the original MP66 gyro these are usually real knocks, such as setting the drone down, so the repair is off by default.</source>
+      <translation>
+        <numerusform>%n tranco curto em um só eixo encontrado. Com o giroscópio original MP66 isso costuma ser um tranco real, como pousar o drone, então a correção vem desligada.</numerusform>
+        <numerusform>%n trancos curtos em um só eixo encontrados. Com o giroscópio original MP66 isso costuma ser um tranco real, como pousar o drone, então a correção vem desligada.</numerusform>
+      </translation>
+    </message>
+    <message numerus="yes">
+      <source>%n false rotation(s) found in this clip, %1° in total, the largest %2°.</source>
+      <translation>
+        <numerusform>%n rotação falsa encontrada neste clipe, %1° no total, a maior com %2°.</numerusform>
+        <numerusform>%n rotações falsas encontradas neste clipe, %1° no total, a maior com %2°.</numerusform>
+      </translation>
+    </message>
+    <message>
+      <source>Remove DJI Gyrogate false rotations</source>
+      <translation>Remover as rotações falsas do DJI Gyrogate</translation>
+    </message>
+    <message>
+      <source>Removes the short false rotations recorded by the ICM-40609-D gyro of DJI O4 units and the slow drift the camera adds while pulling them back, and smooths the dense single-axis tremor the same gyro records. Clips without either are left untouched.</source>
+      <translation>Remove as rotações falsas curtas registradas pelo giroscópio ICM-40609-D das DJI O4 e o desvio lento que a câmera adiciona ao compensá-las, e suaviza o tremor denso em um só eixo que esse mesmo giroscópio registra. Clipes sem nenhum dos dois ficam intactos.</translation>
+    </message>
+    <message>
+      <source>How small a false rotation can be and still be removed. A rotation counts as false when one axis jumps above the threshold for a few milliseconds while the other two stay calm.</source>
+      <translation>Quão pequena uma rotação falsa pode ser e ainda ser removida. Uma rotação conta como falsa quando um eixo salta acima do limite por alguns milissegundos enquanto os outros dois ficam calmos.</translation>
+    </message>
+    <message>
+      <source>0%: threshold 120 °/s, only the large, obvious jolts.
+50% (default): threshold 60 °/s, tuned against Betaflight blackbox logs.
+100%: threshold 30 °/s, also small jolts, but it may mistake real knocks for false ones.</source>
+      <translation>0%: limite de 120 °/s, só os trancos grandes e óbvios.
+50% (padrão): limite de 60 °/s, ajustado com logs de blackbox do Betaflight.
+100%: limite de 30 °/s, pega também trancos pequenos, mas pode confundir trancos reais com falsos.</translation>
+    </message>
+    <message>
+      <source>Raise it if small jolts remain in the stabilized video with the repair on. Lower it if real motion, such as a knock or an impact, looks smoothed away. The value is saved with the project and used for the corrected copy.</source>
+      <translation>Aumente se ainda sobrarem trancos pequenos no vídeo estabilizado com a correção ligada. Diminua se movimentos reais, como uma batida ou impacto, parecerem suavizados demais. O valor é salvo no projeto e usado na cópia corrigida.</translation>
+    </message>
+    <message>
+      <source>The same setting moves the tremor floor, a quarter of the threshold (15 °/s at 50%). The tremor is smoothed on its axis only, where small spikes pile up, many per second.</source>
+      <translation>O mesmo ajuste move o piso do tremor, um quarto do limite (15 °/s em 50%). O tremor é suavizado só no seu eixo, onde picos pequenos se acumulam, muitos por segundo.</translation>
+    </message>
+    <message>
+      <source>Sensitivity</source>
+      <translation>Sensibilidade</translation>
+    </message>
+    <message>
+      <source>Save corrected copy</source>
+      <translation>Salvar cópia corrigida</translation>
+    </message>
+    <message>
+      <source>Writes a copy of the clip with the false rotations removed next to the original (%1), and uses it as the motion data. The video and audio are not changed and the original is kept.</source>
+      <translation>Grava uma cópia do clipe sem as rotações falsas ao lado do original (%1) e passa a usá-la como dados de movimento. O vídeo e o áudio não mudam e o original é mantido.</translation>
+    </message>
+    <message>
+      <source>Saving the corrected copy... %1%</source>
+      <translation>Salvando a cópia corrigida... %1%</translation>
+    </message>
+    <message>
+      <source>Could not save the corrected copy: %1</source>
+      <translation>Não foi possível salvar a cópia corrigida: %1</translation>
+    </message>
+    <message>
+      <source>No false rotations were found at this sensitivity, so no copy was written.</source>
+      <translation>Nenhuma rotação falsa encontrada com essa sensibilidade, então nenhuma cópia foi gravada.</translation>
+    </message>
+    <message>
+      <source>Tremor smoothed in %1 s.</source>
+      <translation>Tremor suavizado em %1 s.</translation>
+    </message>
+    <message numerus="yes">
+      <source>Corrected copy saved to %1 (%n false rotation(s) removed).</source>
+      <translation>
+        <numerusform>Cópia corrigida salva em %1 (%n rotação falsa removida).</numerusform>
+        <numerusform>Cópia corrigida salva em %1 (%n rotações falsas removidas).</numerusform>
+      </translation>
+    </message>
+    <message>
+      <source>false rotations of the gyro</source>
+      <translation>rotações falsas do giroscópio</translation>
+    </message>
+    <message>
+      <source>gyro tremor</source>
+      <translation>tremor do giroscópio</translation>
+    </message>
+    <message>
+      <source>strong shake</source>
+      <translation>chacoalho forte</translation>
+    </message>
+    <message>
+      <source>Shaky stretches found (%1 s). Measuring the camera motion from the image in them: stretch %2 of %3, %4%.</source>
+      <translation>Trechos tremidos encontrados (%1 s). Medindo o movimento da câmera pela imagem neles: trecho %2 de %3, %4%.</translation>
+    </message>
+    <message>
+      <source>Less than a minute left.</source>
+      <translation>Falta menos de um minuto.</translation>
+    </message>
+    <message numerus="yes">
+      <source>About %n min left.</source>
+      <translation>
+        <numerusform>Falta cerca de %n min.</numerusform>
+        <numerusform>Faltam cerca de %n min.</numerusform>
+      </translation>
+    </message>
+    <message>
+      <source>You can keep working meanwhile.</source>
+      <translation>Você pode continuar trabalhando enquanto isso.</translation>
+    </message>
+    <message numerus="yes">
+      <source>%n stretch(es), %1 s in total (%2).</source>
+      <translation>
+        <numerusform>%n trecho, %1 s no total (%2).</numerusform>
+        <numerusform>%n trechos, %1 s no total (%2).</numerusform>
+      </translation>
+    </message>
+    <message>
+      <source>The motion data is unreliable in %1</source>
+      <translation>Os dados de movimento não são confiáveis em %1</translation>
+    </message>
+    <message>
+      <source>Safe mode is off. The motion data is unreliable in %1</source>
+      <translation>O modo seguro está desligado. Os dados de movimento não são confiáveis em %1</translation>
+    </message>
+    <message>
+      <source>Safe mode: the motion data was unreliable in %1 These stretches are stabilized from the image instead, the rest of the clip with the motion data.</source>
+      <translation>Modo seguro: os dados de movimento não eram confiáveis em %1 Esses trechos são estabilizados pela imagem, e o resto do clipe pelos dados de movimento.</translation>
+    </message>
+    <message numerus="yes">
+      <source>%n stretch(es) had too little detail to track (sky, water) and keep the motion data.</source>
+      <translation>
+        <numerusform>%n trecho tinha pouco detalhe para rastrear (céu, água) e mantém os dados de movimento.</numerusform>
+        <numerusform>%n trechos tinham pouco detalhe para rastrear (céu, água) e mantêm os dados de movimento.</numerusform>
+      </translation>
+    </message>
+    <message>
+      <source>Safe mode for shaky stretches</source>
+      <translation>Modo seguro para trechos tremidos</translation>
+    </message>
+    <message>
+      <source>Where the motion data can&apos;t be trusted (false rotations of a DJI O4 gyro, gyro tremor or strong shake), the camera motion is measured from the video itself in those stretches only, like &quot;Ignore motion data from the file&quot; does for a whole clip. The rest of the clip keeps the motion data, so it stays fast.</source>
+      <translation>Onde os dados de movimento não são confiáveis (rotações falsas do giroscópio de uma DJI O4, tremor do giroscópio ou chacoalho forte), o movimento da câmera é medido pelo próprio vídeo só nesses trechos, como &quot;Ignorar os dados de movimento do arquivo&quot; faz com o clipe inteiro. O resto do clipe continua com os dados de movimento, então tudo segue rápido.</translation>
+    </message>
+    <message>
+      <source>GMFlow uses an AI model to follow both weak detail and fast motion, but is much slower. Its model (about 30 MB) is downloaded the first time it&apos;s used.</source>
+      <translation>O GMFlow usa um modelo de IA para seguir tanto detalhes fracos quanto movimentos rápidos, mas é bem mais lento. O modelo (cerca de 30 MB) é baixado na primeira vez que for usado.</translation>
+    </message>
   </context>
   <context>
     <name>NlePlugins</name>
@@ -2145,6 +2331,14 @@ Abra o &lt;b&gt;Terminal&lt;/b&gt; e digite o seguinte comando:</translation>
       <location filename="../../src/ui/menu/Stabilization.qml" line="631"/>
       <source>Automatic</source>
       <translation>Auto</translation>
+    </message>
+    <message>
+      <source>GMFlow (AI dense flow)</source>
+      <translation>GMFlow (fluxo denso por IA)</translation>
+    </message>
+    <message>
+      <source>Optical analysis</source>
+      <translation>Análise óptica</translation>
     </message>
   </context>
   <context>
@@ -3429,6 +3623,18 @@ Certifique-se de definir o valor correto do rolamento do obturador antes de sinc
       <source>Show optical flow</source>
       <translation>Mostrar fluxo óptico</translation>
     </message>
+    <message>
+      <source>GMFlow uses an AI model to follow fast motion and weak detail, but is much slower than the other methods. Its model (about 30 MB) is downloaded the first time it&apos;s used.</source>
+      <translation>O GMFlow usa um modelo de IA para seguir movimentos rápidos e detalhes fracos, mas é bem mais lento que os outros métodos. O modelo (cerca de 30 MB) é baixado na primeira vez que for usado.</translation>
+    </message>
+    <message>
+      <source>Track the sync points the way &quot;Analyze image optically&quot; does.
+Find the rough offset by matching the video&apos;s own rotation to the motion data, then refine it at each sync point by fitting the rotation of every band of rows, rolling shutter included.
+The most accurate method. The optical flow and pose methods don&apos;t apply to it.</source>
+      <translation>Rastreia os pontos de sincronização do jeito que &quot;Analisar a imagem opticamente&quot; faz.
+Encontra o deslocamento aproximado comparando a rotação do próprio vídeo com os dados de movimento e depois o refina em cada ponto de sincronização ajustando a rotação de cada faixa de linhas, incluindo o rolling shutter.
+O método mais preciso. Os métodos de fluxo óptico e de pose não se aplicam a ele.</translation>
+    </message>
   </context>
   <context>
     <name>TableList</name>
@@ -4360,6 +4566,24 @@ Desative a estabilização da lente (Optical SteadyShot) para usar o Gyroflow.</
       <location filename="../../src/ui/VideoArea.qml" line="1263"/>
       <source>The video plays unstabilized until it&apos;s loaded.</source>
       <translation>O vídeo é reproduzido sem estabilização até o fim do carregamento.</translation>
+    </message>
+    <message>
+      <source>This video was recorded with the lens image stabilizer (IS) on, which Gyroflow doesn&apos;t support for Canon cameras.
+Turn the image stabilizer off in order to use Gyroflow.</source>
+      <translation>Este vídeo foi gravado com o estabilizador de imagem da lente (IS) ligado, que o Gyroflow não suporta em câmeras Canon.
+Desligue o estabilizador de imagem para usar o Gyroflow.</translation>
+    </message>
+    <message>
+      <source>The output file is one of the files being merged. Choose another name or folder for the output.</source>
+      <translation>O arquivo de saída é um dos arquivos sendo unidos. Escolha outro nome ou pasta para a saída.</translation>
+    </message>
+    <message>
+      <source>Output file already exists, do you want to overwrite it?</source>
+      <translation>O arquivo de saída já existe. Deseja sobrescrevê-lo?</translation>
+    </message>
+    <message>
+      <source>Rename</source>
+      <translation>Renomear</translation>
     </message>
   </context>
   <context>

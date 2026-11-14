@@ -170,6 +170,18 @@ pub fn detect_tremor(quats: &[Quat4], rate_hz: f64, settings: &Settings) -> f64 
     tremor_weights(&body_rates(quats, rate_hz), rate_hz, settings).map_or(0.0, |w| tremor_seconds(&w, rate_hz))
 }
 
+/// For each rate sample (`n` quaternions -> `n - 1`), whether the tremor low-pass applies there at
+/// least halfway on some axis: where `detect_tremor` counts its seconds. Empty without tremor.
+pub fn tremor_mask(quats: &[Quat4], rate_hz: f64, settings: &Settings) -> Vec<bool> {
+    if quats.len() < 2 || !valid(quats) {
+        return Vec::new();
+    }
+    match tremor_weights(&body_rates(quats, rate_hz), rate_hz, settings) {
+        Some(w) => (0..w[0].len()).map(|i| w.iter().any(|a| a[i] >= 0.5)).collect(),
+        None => Vec::new(),
+    }
+}
+
 /// o4fix `correct()`: the whole pipeline, applied even when no burst is found.
 /// Fewer than 2 samples are returned unchanged (o4fix raises).
 pub fn correct(quats: &[Quat4], rate_hz: f64, settings: &Settings) -> Correction {

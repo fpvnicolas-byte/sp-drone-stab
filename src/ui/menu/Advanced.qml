@@ -40,6 +40,12 @@ MenuItem {
         function propChanged() { settings.propChanged(sett); }
     }
     property alias defaultSuffix: defaultSuffix;
+    // For the Português / English switch under the logo
+    readonly property string currentLanguage: sett.lang;
+    function selectLanguage(code: string): void {
+        const i = langList.langs.findIndex(x => x[1] == code);
+        if (i >= 0) langList.currentIndex = i;
+    }
     property alias previewResolution: previewResolution.currentIndex;
     property alias r3dConvertFormat: r3dConvertFormat;
     property alias gpudecode: gpudecode;
@@ -188,6 +194,8 @@ MenuItem {
         ComboBox {
             id: langList;
             property var langs: [
+                // SP Drone Stab's own two languages first
+                ["Português (Brasil)",           "pt_BR"],
                 ["English",                      "en"],
                 ["Chinese - Simplified (简体中文)",  "zh_CN"],
                 ["Chinese - Traditional (繁體中文)", "zh_TW"],
@@ -204,7 +212,6 @@ MenuItem {
                 ["Korean (한국어)",              "ko"],
                 ["Norwegian (norsk)",            "no"],
                 ["Polish (polski)",              "pl"],
-                ["Portuguese - Brazilian (português brasileiro)", "pt_BR"],
                 ["Portuguese (português)",       "pt"],
                 ["Russian (русский)",            "ru"],
                 ["Serbian (srpski)",             "sr_CS"],

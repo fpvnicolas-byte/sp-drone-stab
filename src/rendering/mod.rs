@@ -923,8 +923,54 @@ fn check_sequence(folder: &str, filename: &str, frames: usize, cancel_flag: &Ato
 /// it measures - it stops decoding and returns "Cancelled"; the first error stops it too
 pub fn analyze_optically(stab: &StabilizationManager, cancel_flag: Arc<AtomicBool>, pause_flag: Option<Arc<AtomicBool>>, progress: impl Fn(f64, usize, usize) + 'static) -> Result<(), String> {
     use gyroflow_core::synchronization::optical_motion::OpticalMotionAnalysis;
-    use std::sync::atomic::Ordering::Relaxed;
     let analysis = OpticalMotionAnalysis::from_manager(stab, cancel_flag.clone())?;
+    // Kept, and fitted with the strength set
+    stab.set_optical_measurements(track_frames(stab, analysis, cancel_flag, pause_flag, progress)?)
+}
+
+/// SP Drone Stab safe mode (`gyroflow_core::safe_mode`): finds the stretches whose motion data is unreliable, measures
+/// the motion from the image in each of them alone, and installs it, so `integrate` splices it in there. Returns how many
+/// stretches there are and in how many the image could be tracked
+pub fn analyze_safe_mode(stab: &StabilizationManager, cancel_flag: Arc<AtomicBool>, progress: impl Fn(f64, usize, usize) + Clone + 'static) -> Result<(usize, usize), String> {
+    use gyroflow_core::synchronization::optical_motion::OpticalMotionAnalysis;
+    use gyroflow_core::safe_mode::SafeModeMotion;
+    let stretches = stab.safe_mode_stretches();
+    if stretches.is_empty() {
+        stab.set_safe_mode(None);
+        return Ok((0, 0));
+    }
+    let settings = *stab.optical_settings.read();
+    let count = stretches.len();
+    let mut video = Vec::with_capacity(count);
+    for (i, s) in stretches.iter().enumerate() {
+        if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) { return Err("Cancelled".into()); }
+        // The stretch on the video's timeline (the file's own ms): the motion data's time plus the sync offset there
+        let gyro = stab.gyro.read().clone_for_lookups(false);
+        let to_video = |us: i64| { let ms = us as f64 / 1000.0; ms + gyro.offset_at_video_timestamp(ms) };
+        let range = (to_video(s.start_us).max(0.0), to_video(s.end_us));
+        let p = progress.clone();
+        let step = move |percent: f64, ready: usize, total: usize| p((i as f64 + percent) / count as f64, ready, total);
+        let measured = OpticalMotionAnalysis::for_safe_mode(stab, vec![range], cancel_flag.clone())
+            .and_then(|analysis| track_frames(stab, analysis, cancel_flag.clone(), None, step))
+            .and_then(|m| gyroflow_core::safe_mode::video_motion(&m, &settings, &gyro));
+        match measured {
+            Ok(q) => video.push(Some(q)),
+            Err(e) if e == "Cancelled" => return Err(e),
+            Err(e) => {
+                // Too little texture (sky, water): the motion data stays there
+                ::log::warn!("Safe mode: the image couldn't be tracked in {:.1}-{:.1} s: {e}", range.0 / 1000.0, range.1 / 1000.0);
+                video.push(None);
+            }
+        }
+    }
+    let measured = video.iter().filter(|v| v.is_some()).count();
+    stab.set_safe_mode(Some(SafeModeMotion { enabled: true, stretches, video }));
+    Ok((count, measured))
+}
+
+/// Decodes the frames an optical analysis asks for (`ranges_ms`), small and gray, feeds them to it and finishes it
+fn track_frames(stab: &StabilizationManager, analysis: gyroflow_core::synchronization::optical_motion::OpticalMotionAnalysis, cancel_flag: Arc<AtomicBool>, pause_flag: Option<Arc<AtomicBool>>, progress: impl Fn(f64, usize, usize) + 'static) -> Result<gyroflow_core::synchronization::optical_motion::OpticalMeasurements, String> {
+    use std::sync::atomic::Ordering::Relaxed;
     let size = stab.params.read().size;
     if size.0 == 0 || size.1 == 0 { return Err("Video is not loaded".into()); }
     let input_file = stab.input_file.read().clone();
@@ -989,8 +1035,7 @@ pub fn analyze_optically(stab: &StabilizationManager, cancel_flag: Arc<AtomicBoo
     if analysis.borrow().is_cancelled() { return Err("Cancelled".into()); }
     if let Some(e) = error.borrow_mut().take() { return Err(e); }
     let analysis = Rc::try_unwrap(analysis).map_err(|_| "The decoder is still holding the analysis".to_string())?.into_inner();
-    // Kept, and fitted with the strength set
-    stab.set_optical_measurements(analysis.finish()?)
+    analysis.finish()
 }
 
 pub fn init_log() {

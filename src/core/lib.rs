@@ -4,6 +4,7 @@
 
 pub mod gyro_source;
 pub mod gyrogate;
+pub mod safe_mode;
 pub mod imu_integration;
 pub mod lens_profile;
 pub mod lens_profile_database;
@@ -1423,6 +1424,36 @@ impl StabilizationManager {
         GyroSource::integrate_shared(&self.gyro, Integration::ApplyTransforms);
         self.invalidate_smoothing();
     }
+    /// SP Drone Stab safe mode (`safe_mode`): installs the stretches and the motion measured from the image in them, or
+    /// none, and integrates the motion data again with them
+    pub fn set_safe_mode(&self, motion: Option<safe_mode::SafeModeMotion>) {
+        self.gyro.write().safe_mode = motion.map(Arc::new);
+        self.recompute_gyro();
+    }
+    /// Turns safe mode on or off without measuring again
+    pub fn set_safe_mode_enabled(&self, enabled: bool) {
+        let changed = {
+            let mut gyro = self.gyro.write();
+            match gyro.safe_mode.as_deref() {
+                Some(s) if s.enabled != enabled => { gyro.safe_mode = Some(Arc::new(safe_mode::SafeModeMotion { enabled, ..s.clone() })); true }
+                _ => false,
+            }
+        };
+        if changed { self.recompute_gyro(); }
+    }
+    /// The stretches safe mode would stabilize from the image in the motion data as loaded (after the Gyrogate repair is
+    /// set, before any is spliced in): the Gyrogate detector's on a DJI O4 with the new gyro, and strong shake on any camera
+    pub fn safe_mode_stretches(&self) -> Vec<safe_mode::Stretch> {
+        let gyro = self.gyro.read();
+        let file_metadata = gyro.file_metadata.read();
+        let unit = gyrogate::unit::classify(&file_metadata.additional_data);
+        let gyrogate = match unit.map(|u| u.chip) {
+            Some(gyrogate::unit::Chip::Mp66) | None => None,
+            Some(_) => Some(gyrogate::Settings::from_strength(gyro.imu_transforms.gyrogate_strength)),
+        };
+        safe_mode::find(&file_metadata.quaternions, gyrogate.as_ref(), &Default::default())
+    }
+
     /// Integrates the motion data again with another method (`GyroSource::integration_method`)
     pub fn set_integration_method(&self, method: usize) {
         self.gyro.write().integration_method = method;
