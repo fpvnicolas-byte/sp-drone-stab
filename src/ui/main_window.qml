@@ -46,7 +46,7 @@ Window {
     }
 
     Material.theme: Material.Dark;
-    Material.accent: Material.Blue;
+    Material.accent: styleAccentColor; // SP orange: sliders, spinners, progress
 
     function getApp(): App {
         for (let i = 0; i < contentItem.children.length; ++i) {

@@ -67,6 +67,8 @@ impl UITools {
         cpp!(unsafe [] -> QString as "QString" {
             QString lang  = QLocale::system().name();
             QString lang2 = lang.mid(0, 2);
+            // SP Drone Stab: a Mac set to Brazil (often with English as its language) starts in Brazilian Portuguese
+            if (lang.endsWith("_BR")) return "pt_BR";
             if (QFile::exists(":/resources/translations/" + lang + ".qm")) return lang;
             if (QFile::exists(":/resources/translations/" + lang2 + ".qm")) return lang2;
             if (lang2 == "zh") {
