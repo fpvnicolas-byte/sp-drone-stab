@@ -125,6 +125,10 @@ pub struct GyroSource {
     /// `set_ignore_file_motion`
     #[serde(skip)]
     ignored_motion: Option<Arc<(FileMotion, BTreeMap<i64, f64>)>>,
+    /// SP Drone Stab safe mode: the stretches whose motion data is replaced with the motion measured from the image,
+    /// spliced into `quaternions` by `integrate`, see `crate::safe_mode`
+    #[serde(skip)]
+    pub safe_mode: Option<Arc<crate::safe_mode::SafeModeMotion>>,
 
     /// The video's frame rate scale (`StabilizationParams::fps_scale`): the video's times here are its file's over it
     #[serde(skip)]
@@ -342,6 +346,7 @@ impl GyroSource {
             optical_context: self.optical_context,
             motion_from_video: self.motion_from_video,
             ignored_motion: self.ignored_motion.clone(),
+            safe_mode: self.safe_mode.clone(),
             fps_scale: self.fps_scale,
             capture_frame_rate: self.capture_frame_rate,
             video_duration_ms: self.video_duration_ms,
@@ -1038,6 +1043,7 @@ impl GyroSource {
         self.imu_transforms.gyrogate_strength = 50.0;
         self.file_metadata = Default::default();
         self.optical_correction = None;
+        self.safe_mode = None;
         // What the last `integrate` made of the orientations cleared above: a file whose orientations are loaded as they
         // are (`load_from_telemetry` without IMU readings) isn't integrated, and would keep them
         self.optical_correction_applied = false;
@@ -1166,7 +1172,19 @@ impl GyroSource {
             _ => log::error!("Unknown integrator")
         }
         drop(file_metadata);
+        // Before the optical correction: it's measured against the orientations as they are with the stretches spliced in
+        self.apply_safe_mode();
         self.apply_optical_correction();
+    }
+
+    /// Splices the motion measured from the image into the stretches of safe mode (`crate::safe_mode`)
+    fn apply_safe_mode(&mut self) {
+        if let Some(safe) = self.safe_mode.clone() {
+            if safe.enabled && self.quaternions.len() >= 2 {
+                let spliced = safe.apply(Arc::make_mut(&mut self.quaternions));
+                if spliced > 0 { log::info!("Safe mode: {spliced} stretch(es) stabilized from the image"); }
+            }
+        }
     }
 
     /// Composes the correction measured from the video onto freshly integrated quaternions - when it was measured
@@ -1586,6 +1604,7 @@ impl GyroSource {
             && self.horizon_lock_integration_method == copy.horizon_lock_integration_method
             && self.use_gravity_vectors == copy.use_gravity_vectors
             && self.duration_ms.to_bits() == copy.duration_ms.to_bits()
+            && match (&self.safe_mode, &copy.safe_mode) { (Some(a), Some(b)) => Arc::ptr_eq(a, b), (None, None) => true, _ => false }
             // `integrate` reads the filtered readings there are, `apply_transforms` filters them anew
             && (integration == Integration::ApplyTransforms || Arc::ptr_eq(&self.raw_imu, &copy.raw_imu))
     }
@@ -1756,6 +1775,7 @@ impl GyroSource {
         hasher.write_i32(self.imu_transforms.imu_mf);
         hasher.write_u8(if self.imu_transforms.gyrogate_filter { 1 } else { 0 });
         hasher.write_u64(self.imu_transforms.gyrogate_strength.to_bits());
+        if let Some(s) = &self.safe_mode { s.hash_into(&mut hasher); }
         hasher.write_usize(self.raw_imu.len());
         hasher.write_usize(file_metadata.raw_imu.len());
         hasher.write_usize(self.quaternions.len());

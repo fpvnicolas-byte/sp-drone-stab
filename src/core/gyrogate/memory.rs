@@ -27,7 +27,7 @@ pub struct Summary {
 
 /// The unique attitude samples of `data`, and for every entry the index of its unique sample.
 /// `None` when the track is not the 1 kHz attitude the repair is tuned for.
-fn unique_samples(data: &TimeQuat) -> Option<(Vec<Quat4>, Vec<usize>)> {
+pub(crate) fn unique_samples(data: &TimeQuat) -> Option<(Vec<Quat4>, Vec<usize>)> {
     let stored: Vec<Quat4> = data.values().map(|q| [q.w, q.i, q.j, q.k]).collect();
     let (unique, index) = dsp::dedup(&stored);
     let (first, last) = (*data.keys().next()? as f64, *data.keys().next_back()? as f64);

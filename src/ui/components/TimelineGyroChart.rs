@@ -73,6 +73,9 @@ pub struct TimelineGyroChart {
     sync_points: BTreeMap<i64, (f64, f64)>, // timestamp, (offset, fitted offset)
     /// Where the segments of a video cut from recordings start, but the first: the video's time, µs
     segment_starts: Vec<i64>,
+    /// SP Drone Stab safe mode: the stretches stabilized from the image, the video's time, µs, and whether the image
+    /// could be tracked there
+    safe_stretches: Vec<(i64, i64, bool)>,
 
     gyro: Vec<ChartData<3>>,
     accl: Vec<ChartData<3>>,
@@ -262,6 +265,25 @@ impl TimelineGyroChart {
             }
         }
     }
+    /// SP Drone Stab safe mode: a band over the stretches stabilized from the image (amber), or where the image couldn't
+    /// be tracked and the motion data stays (grey)
+    fn drawSafeStretches(&mut self, p: &mut QPainter) {
+        let rect = (self as &dyn QQuickItem).bounding_rect();
+        let duration_us = self.duration_ms * 1000.0;
+        if rect.width <= 0.0 || rect.height <= 0.0 || duration_us <= 0.0 || self.safe_stretches.is_empty() { return; }
+        let map_to_visible_area = |v: f64| -> f64 { (v - self.visibleAreaLeft) / (self.visibleAreaRight - self.visibleAreaLeft) };
+        p.set_pen(QPen::from_style(PenStyle::NoPen));
+        for &(start, end, measured) in &self.safe_stretches {
+            let x0 = map_to_visible_area(start as f64 / duration_us) * rect.width;
+            let x1 = map_to_visible_area(end as f64 / duration_us) * rect.width;
+            if x1 < 0.0 || x0 > rect.width { continue; }
+            p.set_brush(QBrush::from_color(QColor::from_name(if measured { "#40f5a623" } else { "#30888888" })));
+            p.draw_rect(QRectF { x: x0, y: 0.0, width: (x1 - x0).max(1.0), height: rect.height });
+            // A solid strip along the bottom, visible even with the chart's own colors over the band
+            p.set_brush(QBrush::from_color(QColor::from_name(if measured { "#f5a623" } else { "#888888" })));
+            p.draw_rect(QRectF { x: x0, y: rect.height - 3.0, width: (x1 - x0).max(1.0), height: 3.0 });
+        }
+    }
     /// The boundaries of the segments of a video cut from recordings, where the video and the motion jump to another
     /// moment: a dashed line across the chart
     fn drawSegmentBoundaries(&mut self, p: &mut QPainter, color: &str) {
@@ -374,6 +396,11 @@ impl TimelineGyroChart {
             self.smoothed_quats.clear();
             self.sync_points = gyro.get_offsets_plus_linear();
             self.segment_starts = gyro.segment_ranges().map(|s| s.video_starts_us.iter().skip(1).copied().collect()).unwrap_or_default();
+            self.safe_stretches = gyro.safe_mode.as_deref().filter(|s| s.enabled).map(|s| s.stretches.iter().zip(&s.video).map(|(st, v)| {
+                // The motion data's time to the video's: plus the sync offset there
+                let to_video = |us: i64| us + (gyro.offset_at_video_timestamp(us as f64 / 1000.0) * 1000.0).round() as i64;
+                (to_video(st.start_us), to_video(st.end_us), v.is_some())
+            }).collect()).unwrap_or_default();
 
             {
                 let file_metadata = gyro.file_metadata.read();
@@ -641,5 +668,6 @@ impl QQuickPaintedItem for TimelineGyroChart {
         if self.series[SERIES_SYNC_POINTS].visible { self.drawSyncPoints(p); }
 
         self.drawSegmentBoundaries(p, if self.theme == "light" { "#a0000000" } else { "#a0ffffff" });
+        self.drawSafeStretches(p);
     }
 }

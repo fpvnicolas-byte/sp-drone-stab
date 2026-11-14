@@ -31,6 +31,14 @@ MenuItem {
     property real gyrogateProgress: 0;
     // The clip the corrected copy is being written for, to apply it only if still loaded
     property string gyrogateCopyFor: "";
+    // SP Drone Stab safe mode: the stretches whose motion data is unreliable (found at load time) and what the image
+    // analysis of them gave (`controller.safe_mode_info()`), see `safe_mode.rs`
+    property var safeModeFound: null;
+    property var safeModeInfo: null;
+    property bool safeModeBusy: false;
+    property real safeModeProgress: 0;
+    // When the image analysis started, for the time left shown while it runs
+    property real safeModeStartedAt: 0;
     readonly property bool gyrogateRecommended: !!gyrogate && !!gyrogate.summary && (gyrogate.summary.bursts > 0 || gyrogate.summary.tremor_seconds > 0)
                                                 && gyrogate.unit.chip != "mp66" && !gyrogate.repaired_copy;
 
@@ -172,6 +180,12 @@ MenuItem {
             if (is_main_video && root.gyrogateRecommended && !root.opened) {
                 root.opened = true;
                 gyrogateRevealTimer.start();
+            }
+            // Safe mode measures the shaky stretches from the image by itself, once the video is ready
+            root.safeModeInfo = null;
+            root.safeModeFound = additional_data.safe_mode || null;
+            if (is_main_video && safeModecb.checked && root.safeModeFound && root.safeModeFound.count > 0) {
+                safeModeTimer.start();
             }
             controller.set_optical_correction_strength(opticalStrength.value / 100);
             controller.set_optical_correction_per_frame(opticalPerFrame.currentIndex === 1);
@@ -492,6 +506,87 @@ MenuItem {
                 delete obj.gyro_source.file_metadata;
                 obj.gyro_source.gyrogate_filter = false;
                 window.videoArea.loadGyroflowData(obj, render_queue.editing_job_id);
+            }
+        }
+    }
+    Timer {
+        id: safeModeTimer;
+        interval: 1500; // After the video's first frames are decoded
+        onTriggered: {
+            root.safeModeBusy = true;
+            root.safeModeProgress = 0;
+            root.safeModeStartedAt = Date.now();
+            controller.analyze_safe_mode();
+        }
+    }
+    Connections {
+        target: controller;
+        function onSafe_mode_progress(percent: real): void { root.safeModeProgress = percent; }
+        function onSafe_mode_changed(): void {
+            root.safeModeBusy = false;
+            try { root.safeModeInfo = JSON.parse(controller.safe_mode_info()); } catch (e) { root.safeModeInfo = null; }
+        }
+    }
+    Column {
+        id: safeModeSection;
+        width: parent.width;
+        spacing: 5 * dpiScale;
+        visible: !!root.safeModeFound && root.safeModeFound.count > 0;
+
+        function reasonsText(reasons: var): string {
+            const names = (reasons || []).map(r => r == "false_rotations"? qsTr("false rotations of the gyro")
+                                                : r == "tremor"? qsTr("gyro tremor")
+                                                : qsTr("strong shake"));
+            return names.join(", ");
+        }
+        // "Stretch 2 of 5, 31%, about 1 min left": the analysis takes minutes on a long 4K clip and has to look alive
+        function busyText(found: var): string {
+            const p = Math.max(0, Math.min(1, root.safeModeProgress));
+            const count = Math.max(1, found.count);
+            const current = Math.min(count, Math.floor(p * count) + 1);
+            let t = qsTr("Shaky stretches found (%1 s). Measuring the camera motion from the image in them: stretch %2 of %3, %4%.")
+                        .arg(found.seconds.toFixed(0)).arg(current).arg(count).arg(Math.round(p * 100));
+            const elapsed = (Date.now() - root.safeModeStartedAt) / 1000;
+            if (p > 0.03 && elapsed > 5) {
+                const left = elapsed * (1 - p) / p;
+                t += " " + (left < 60? qsTr("Less than a minute left.") : qsTr("About %n min left.", "", Math.round(left / 60)));
+            }
+            t += " " + qsTr("You can keep working meanwhile.");
+            return t;
+        }
+        function text(): string {
+            const found = root.safeModeFound;
+            if (!found) return "";
+            if (root.safeModeBusy) return busyText(found);
+            const info = root.safeModeInfo;
+            const where = qsTr("%n stretch(es), %1 s in total (%2).", "", found.count).arg(found.seconds.toFixed(1)).arg(reasonsText(found.reasons));
+            if (!info) return qsTr("The motion data is unreliable in %1").arg(where);
+            if (!info.enabled) return qsTr("Safe mode is off. The motion data is unreliable in %1").arg(where);
+            const measured = info.stretches.filter(s => s.measured).length;
+            let t = qsTr("Safe mode: the motion data was unreliable in %1 These stretches are stabilized from the image instead, the rest of the clip with the motion data.").arg(where);
+            if (measured < info.stretches.length) {
+                t += " " + qsTr("%n stretch(es) had too little detail to track (sky, water) and keep the motion data.", "", info.stretches.length - measured);
+            }
+            return t;
+        }
+
+        InfoMessageSmall {
+            show: safeModeSection.visible;
+            type: InfoMessage.Info;
+            text: safeModeSection.text();
+        }
+        CheckBoxWithContent {
+            id: safeModecb;
+            text: qsTr("Safe mode for shaky stretches");
+            checked: true;
+            tooltip: qsTr("Where the motion data can't be trusted (false rotations of a DJI O4 gyro, gyro tremor or strong shake), the camera motion is measured from the video itself in those stretches only, like \"Ignore motion data from the file\" does for a whole clip. The rest of the clip keeps the motion data, so it stays fast.");
+            onCheckedChanged: {
+                if (!root.safeModeInfo && checked && root.safeModeFound && root.safeModeFound.count > 0 && !root.safeModeBusy) {
+                    safeModeTimer.interval = 1;
+                    safeModeTimer.start();
+                } else {
+                    controller.set_safe_mode_enabled(checked);
+                }
             }
         }
     }

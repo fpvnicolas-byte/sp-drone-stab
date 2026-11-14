@@ -881,7 +881,7 @@ pub struct OpticalMotionAnalysis {
 
 impl OpticalMotionAnalysis {
     pub fn from_manager(stab: &StabilizationManager, cancel_flag: Arc<AtomicBool>) -> Result<Self, String> {
-        Self::new(stab, None, cancel_flag)
+        Self::new(stab, None, false, false, cancel_flag)
     }
 
     /// An analysis for the synchronization (`find_offset::bands`): of the parts of the file given (its own ms) instead
@@ -889,10 +889,17 @@ impl OpticalMotionAnalysis {
     /// build has no other KLT, even with the CPU chosen for processing. What it measures is measured again against the
     /// offsets tried, `OpticalMeasurements::remeasure_against`
     pub fn for_sync(stab: &StabilizationManager, ranges_ms: Vec<(f64, f64)>, cancel_flag: Arc<AtomicBool>) -> Result<Self, String> {
-        Self::new(stab, Some(ranges_ms), cancel_flag)
+        Self::new(stab, Some(ranges_ms), true, false, cancel_flag)
     }
 
-    fn new(stab: &StabilizationManager, sync_ranges_ms: Option<Vec<(f64, f64)>>, cancel_flag: Arc<AtomicBool>) -> Result<Self, String> {
+    /// SP Drone Stab safe mode (`crate::safe_mode`): an analysis of the parts of the file given (its own ms) that
+    /// measures all of the motion from the video, as for a file without motion data, even though the file has some: there
+    /// the motion data is too broken to correct. Tracked with the method chosen for the optical correction
+    pub fn for_safe_mode(stab: &StabilizationManager, ranges_ms: Vec<(f64, f64)>, cancel_flag: Arc<AtomicBool>) -> Result<Self, String> {
+        Self::new(stab, Some(ranges_ms), false, true, cancel_flag)
+    }
+
+    fn new(stab: &StabilizationManager, sync_ranges_ms: Option<Vec<(f64, f64)>>, for_sync: bool, force_from_video: bool, cancel_flag: Arc<AtomicBool>) -> Result<Self, String> {
         // Before anything is read: whatever changes it from here on is a reason to stop
         let generation = stab.optical_generation.load(SeqCst);
         let mut params = measurement_params(stab);
@@ -900,14 +907,13 @@ impl OpticalMotionAnalysis {
         // Without motion data in the file (also after an analysis of such a file: its orientation is only in the
         // correction) the analysis measures the motion itself. It only looks the motion data up: not a copy of all of it,
         // which would copy a long clip's IMU readings and smoothed orientations
-        let from_video = !stab.gyro.read().file_metadata.read().has_motion();
+        let from_video = force_from_video || !stab.gyro.read().file_metadata.read().has_motion();
         let gyro = GyroSource::uncorrected_for_lookups(&stab.gyro, !from_video);
         if !from_video && gyro.quaternions.len() < 2 {
             return Err("No motion data to correct".into());
         }
         let quats_checksum = optical_correction::checksum(&gyro.quaternions);
         params.gyro = Arc::new(parking_lot::RwLock::new(gyro));
-        let for_sync = sync_ranges_ms.is_some();
         let tracking = if for_sync { TrackingMethod::Klt } else { *stab.optical_tracking.read() };
         let context_checksum = context_checksum(&params);
 
