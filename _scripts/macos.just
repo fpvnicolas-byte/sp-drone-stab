@@ -193,6 +193,10 @@ deploy *param:
     mkdir -p $ICON_OUT/../AppIcon.iconset/
     cp -f $ICON_OUT/*.png $ICON_OUT/../AppIcon.iconset/
     iconutil -c icns $ICON_OUT/../AppIcon.iconset --output $PROJECT_DIR/_deployment/mac/Gyroflow.app/Contents/Resources/AppIcon.icns
+    # SP Drone Stab's own icon
+    if [ -f "$PROJECT_DIR/resources/brand/icone-sp-drone-stab.icns" ]; then
+        cp -f "$PROJECT_DIR/resources/brand/icone-sp-drone-stab.icns" "$PROJECT_DIR/_deployment/mac/Gyroflow.app/Contents/Resources/AppIcon.icns"
+    fi
     rm -rf $ICON_OUT/../AppIcon.iconset
 
     if [ "{{param}}" == "local" ] || [ "{{param}}" == "universal" ]; then
@@ -201,8 +205,18 @@ deploy *param:
         cp -Rf "$PROJECT_DIR/_deployment/mac/Gyroflow.app"    "$PROJECT_DIR/_deployment/_binaries/mac/"
         cp -f  "$PROJECT_DIR/target/deploy/gyroflow"          "$PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app/Contents/MacOS/"
         strip "$PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app/Contents/MacOS/gyroflow"
-        cp -Rf "$PROJECT_DIR/target/Frameworks/mdk.framework" "$PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app/Contents/Frameworks/" || true
-        cp -Rf "$PROJECT_DIR/target/x86_64-apple-darwin/Frameworks/mdk.framework" "$PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app/Contents/Frameworks/"
+        # qml-video-rs copies mdk.framework a fixed number of folders above its OUT_DIR, which newer cargo nests deeper:
+        # look for it there, then take it from the extracted SDK itself
+        MDK_FRAMEWORK=""
+        for d in "$PROJECT_DIR/target/Frameworks" "$PROJECT_DIR/target/x86_64-apple-darwin/Frameworks" "$PROJECT_DIR/target/x86_64-apple-darwin/deploy/Frameworks" "$PROJECT_DIR/target/deploy/Frameworks"; do
+            if [ -z "$MDK_FRAMEWORK" ] && [ -d "$d/mdk.framework" ]; then MDK_FRAMEWORK="$d/mdk.framework"; fi
+        done
+        if [ -z "$MDK_FRAMEWORK" ]; then
+            MDK_FRAMEWORK=$(find "$PROJECT_DIR/target" -type d -path "*/mdk-sdk/lib/mdk.framework" -prune 2>/dev/null | head -n 1)
+        fi
+        if [ -z "$MDK_FRAMEWORK" ]; then echo "mdk.framework not found under $PROJECT_DIR/target"; exit 1; fi
+        echo "Using $MDK_FRAMEWORK"
+        cp -Rf "$MDK_FRAMEWORK" "$PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app/Contents/Frameworks/"
         # cp -Rf "$PROJECT_DIR/resources/camera_presets"        "$PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app/Contents/Resources/"
         # rm -rf "$PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app/Contents/Resources/camera_presets/.git"
         cp -f "$PROJECT_DIR/resources/camera_presets/profiles.cbor.gz" "$PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app/Contents/Resources/camera_presets/profiles.cbor.gz"
@@ -329,9 +343,15 @@ deploy *param:
             codesign -vvvv --strict --options runtime --timestamp --force -s $SIGNING_FINGERPRINT $PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app
 
             codesign -vvvv --deep --verify $PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app
+        else
+            # No Developer ID: ad-hoc sign so the app still runs on Apple Silicon (the user must allow it in Privacy & Security)
+            codesign --force --deep -s - $PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app
         fi
 
         if [ -z "$DONT_BUILD_DMG" ]; then
+            # Its own name in Applications, next to an installed Gyroflow instead of replacing it (renaming keeps the signature)
+            rm -rf "$PROJECT_DIR/_deployment/_binaries/mac/SP Drone Stab.app"
+            mv "$PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app" "$PROJECT_DIR/_deployment/_binaries/mac/SP Drone Stab.app"
             ln -sf /Applications "$PROJECT_DIR/_deployment/_binaries/mac/Applications"
 
             for i in 1 2 3 4 5 6 7 8 9 10
@@ -340,7 +360,7 @@ deploy *param:
                 sudo pkill -9 XProtect >/dev/null || true
                 while pgrep XProtect; do sleep 3; done;
 
-                hdiutil create "$PROJECT_DIR/_deployment/_binaries/Gyroflow-mac-universal.dmg" -volname "Gyroflow v{{ProjectVersion}}" -fs HFS+ -srcfolder "$PROJECT_DIR/_deployment/_binaries/mac/" -ov -format UDZO -imagekey zlib-level=9 || true
+                hdiutil create "$PROJECT_DIR/_deployment/_binaries/Gyroflow-mac-universal.dmg" -volname "SP Drone Stab v{{ProjectVersion}}" -fs HFS+ -srcfolder "$PROJECT_DIR/_deployment/_binaries/mac/" -ov -format UDZO -imagekey zlib-level=9 || true
 
                 if [ -f "$PROJECT_DIR/_deployment/_binaries/Gyroflow-mac-universal.dmg" ]; then
                     break

@@ -44,7 +44,7 @@ Window {
     property alias lensCalib: lensCalib;
 
     Material.theme: Material.Dark;
-    Material.accent: Material.Blue;
+    Material.accent: styleAccentColor; // SP orange: sliders, spinners, progress
 
     title: qsTr("Lens calibrator");
 

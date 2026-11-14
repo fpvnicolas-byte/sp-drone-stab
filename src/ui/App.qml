@@ -163,7 +163,28 @@ Rectangle {
                         anchors.centerIn: parent;
                     }
                 }
-                Hr { }
+                // Português / English, one click away (the full list stays in Advanced)
+                Row {
+                    id: langSwitch;
+                    anchors.horizontalCenter: parent.horizontalCenter;
+                    readonly property string current: advanced.item? advanced.item.currentLanguage : "";
+                    Repeater {
+                        model: [["pt_BR", "Português"], ["en", "English"]];
+                        LinkButton {
+                            required property var modelData;
+                            text: modelData[1];
+                            transparent: true;
+                            font.underline: false;
+                            font.bold: langSwitch.current == modelData[0];
+                            textColor: langSwitch.current == modelData[0]? styleAccentColor : styleTextColor;
+                            topPadding: 0;
+                            bottomPadding: 6 * dpiScale;
+                            onClicked: if (advanced.item) advanced.item.selectLanguage(modelData[0]);
+                        }
+                    }
+                }
+                // The brand's orange line
+                Rectangle { width: parent.width; height: 2 * dpiScale; color: styleAccentColor; }
             }
 
             ItemLoader { id: vidInfo; sourceComponent: Component {

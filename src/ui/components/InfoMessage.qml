@@ -14,7 +14,7 @@ Rectangle {
     height: t.height + 20 * dpiScale;
     color: type == InfoMessage.Warning? "#f6a10c" :
            type == InfoMessage.Error?   "#f41717" :
-           type == InfoMessage.Info?    "#17b6f4" :
+           type == InfoMessage.Info?    "#efede5" : // SP Drone Stab: the brand's off-white, with its orange line on the left
            "transparent";
     radius: 5 * dpiScale;
     property alias text: t.text;
@@ -33,6 +33,14 @@ Rectangle {
     onParentWidthChanged: Qt.callLater(updateSize);
     Ease on opacity { }
     Ease on height { }
+
+    Rectangle {
+        visible: root.type == InfoMessage.Info;
+        width: 4 * dpiScale;
+        height: parent.height;
+        radius: parent.radius;
+        color: "#fc431c";
+    }
 
     Text {
         id: t;
