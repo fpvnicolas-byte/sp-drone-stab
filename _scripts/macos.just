@@ -193,6 +193,10 @@ deploy *param:
     mkdir -p $ICON_OUT/../AppIcon.iconset/
     cp -f $ICON_OUT/*.png $ICON_OUT/../AppIcon.iconset/
     iconutil -c icns $ICON_OUT/../AppIcon.iconset --output $PROJECT_DIR/_deployment/mac/Gyroflow.app/Contents/Resources/AppIcon.icns
+    # SP Drone Stab's own icon
+    if [ -f "$PROJECT_DIR/resources/brand/icone-sp-drone-stab.icns" ]; then
+        cp -f "$PROJECT_DIR/resources/brand/icone-sp-drone-stab.icns" "$PROJECT_DIR/_deployment/mac/Gyroflow.app/Contents/Resources/AppIcon.icns"
+    fi
     rm -rf $ICON_OUT/../AppIcon.iconset
 
     if [ "{{param}}" == "local" ] || [ "{{param}}" == "universal" ]; then
@@ -345,6 +349,9 @@ deploy *param:
         fi
 
         if [ -z "$DONT_BUILD_DMG" ]; then
+            # Its own name in Applications, next to an installed Gyroflow instead of replacing it (renaming keeps the signature)
+            rm -rf "$PROJECT_DIR/_deployment/_binaries/mac/SP Drone Stab.app"
+            mv "$PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app" "$PROJECT_DIR/_deployment/_binaries/mac/SP Drone Stab.app"
             ln -sf /Applications "$PROJECT_DIR/_deployment/_binaries/mac/Applications"
 
             for i in 1 2 3 4 5 6 7 8 9 10
@@ -353,7 +360,7 @@ deploy *param:
                 sudo pkill -9 XProtect >/dev/null || true
                 while pgrep XProtect; do sleep 3; done;
 
-                hdiutil create "$PROJECT_DIR/_deployment/_binaries/Gyroflow-mac-universal.dmg" -volname "Gyroflow v{{ProjectVersion}}" -fs HFS+ -srcfolder "$PROJECT_DIR/_deployment/_binaries/mac/" -ov -format UDZO -imagekey zlib-level=9 || true
+                hdiutil create "$PROJECT_DIR/_deployment/_binaries/Gyroflow-mac-universal.dmg" -volname "SP Drone Stab v{{ProjectVersion}}" -fs HFS+ -srcfolder "$PROJECT_DIR/_deployment/_binaries/mac/" -ov -format UDZO -imagekey zlib-level=9 || true
 
                 if [ -f "$PROJECT_DIR/_deployment/_binaries/Gyroflow-mac-universal.dmg" ]; then
                     break
