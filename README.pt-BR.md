@@ -14,10 +14,10 @@
 
 O SP Drone Stab estabiliza vídeos FPV usando os dados de movimento que a câmera grava. Ele foi feito para quem voa com
 a DJI O4 e, principalmente, para as unidades da O4 cujo giroscópio grava movimentos falsos, o que faz as correções
-comuns deixarem o vídeo pulando ou com aspecto de gelatina.
+comuns deixarem o vídeo pulando ou com jello.
 
-> **Situação: em desenvolvimento.** Ainda não há versão publicada. As primeiras versões de teste para macOS estão sendo
-> geradas agora. Os recursos abaixo já estão no código, mas ainda não foram testados por usuários.
+> **Situação: primeira versão de teste.** A versão de macOS é a testada. A de Windows também é publicada, mas ainda não
+> foi testada.
 
 ## O que ele faz
 
@@ -37,13 +37,15 @@ comuns deixarem o vídeo pulando ou com aspecto de gelatina.
 
 ## Download
 
-Ainda não há versão publicada. As versões vão sair na
-[página de Releases](https://github.com/fpvnicolas-byte/sp-drone-stab/releases).
+- **macOS (Apple Silicon e Intel):** [SP-Drone-Stab-mac.dmg](https://github.com/fpvnicolas-byte/sp-drone-stab/releases/latest/download/SP-Drone-Stab-mac.dmg).
+  Abra e arraste o **SP Drone Stab** para Aplicativos. Ele fica ao lado do Gyroflow, não substitui. O app não é
+  assinado pela Apple, então na primeira vez o macOS bloqueia a abertura: vá em **Ajustes do Sistema > Privacidade e
+  Segurança** e clique em **Abrir Mesmo Assim**.
+- **Windows (ainda não testado):** [SP-Drone-Stab-windows64.zip](https://github.com/fpvnicolas-byte/sp-drone-stab/releases/latest/download/SP-Drone-Stab-windows64.zip).
+  Extraia em qualquer pasta e abra o `Gyroflow.exe`.
 
-Até lá, as versões de teste ficam disponíveis como artefatos de compilação na
-[página Actions](https://github.com/fpvnicolas-byte/sp-drone-stab/actions) (é preciso estar logado no GitHub). A versão
-de macOS não é assinada pela Apple, então na primeira vez o macOS bloqueia a abertura: vá em **Ajustes do Sistema >
-Privacidade e Segurança** e clique em **Abrir Mesmo Assim**.
+Todas as versões ficam na [página de Releases](https://github.com/fpvnicolas-byte/sp-drone-stab/releases). O Gyroflow
+oficial fica em [gyroflow.xyz](https://gyroflow.xyz); este não é ele.
 
 ## Problemas e sugestões
 

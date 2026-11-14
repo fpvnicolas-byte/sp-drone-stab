@@ -195,52 +195,33 @@ jobs:
   github_release:
     name: Create GitHub release
     needs: build
-    runs-on: macos-15
+    # SP Drone Stab ships macOS and Windows; the other platforms failing must not hold the release back
+    if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
 
-      - run: find . -type f
-
-      - if: startsWith(github.ref, 'refs/tags/')
-        run: rm -rf ./Gyroflow-debug-symbols*
-
-      - name: Upload to App Store
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+      - name: Name the files after SP Drone Stab
         run: |
-          xcrun altool --upload-app -f ./Gyroflow-ios/Gyroflow.ipa -t iOS -u ${{ secrets.MACOS_ACCOUNT_USER }} -p ${{ secrets.MACOS_ACCOUNT_PASS }}
-          xcrun altool --upload-app -f ./Gyroflow-macstore/Gyroflow.pkg -t macos -u ${{ secrets.MACOS_ACCOUNT_USER }} -p ${{ secrets.MACOS_ACCOUNT_PASS }}
-
-      - name: Upload to Google Play
-        uses: r0adkll/upload-google-play@v1
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-        with:
-          serviceAccountJsonPlainText: ${{ secrets.ANDROID_SERVICE_ACCOUNT_JSON }}
-          packageName: xyz.gyroflow
-          releaseFiles: ./Gyroflow-android/Gyroflow.aab
-          track: ${{ startsWith(github.ref, 'refs/tags/') && 'production' || 'beta' }}
+          mkdir release
+          cp ./Gyroflow-macos/Gyroflow-mac-universal.dmg      release/SP-Drone-Stab-mac.dmg
+          cp ./Gyroflow-windows/Gyroflow-windows64.zip        release/SP-Drone-Stab-windows64.zip      || true
+          cp ./Gyroflow-windows-arm/Gyroflow-windows-arm64.zip release/SP-Drone-Stab-windows-arm64.zip || true
+          ls -la release
 
       - name: Publish
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
         with:
-          prerelease: true
-          files: |
-            ./Gyroflow-windows/Gyroflow-windows64.zip
-            ./Gyroflow-windows-arm/Gyroflow-windows-arm64.zip
-            ./Gyroflow-macos/Gyroflow-mac-universal.dmg
-            ./Gyroflow-linux/Gyroflow-linux64.AppImage
-            ./Gyroflow-linux/Gyroflow-linux64.tar.gz
-            ./Gyroflow-android/Gyroflow.apk
-  winget_release:
-    name: Publish to WinGet
-    needs: github_release
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: windows-latest
-    # If this fails, go to gyroflow/winget-pkgs on GitHub and sync fork
-    steps:
-      - uses: vedantmgoyal9/winget-releaser@v2
-        with:
-          identifier: Gyroflow.Gyroflow
-          token: ${{ secrets.WINGET_TOKEN }}
-          installers-regex: 'Gyroflow\-windows64\.zip$'
+          name: SP Drone Stab ${{ github.ref_name }}
+          prerelease: false
+          make_latest: true
+          files: release/*
+          body: |
+            **Português:** baixe `SP-Drone-Stab-mac.dmg`, abra e arraste o SP Drone Stab para Aplicativos (ele fica ao lado do Gyroflow). Na primeira vez, vá em Ajustes do Sistema > Privacidade e Segurança e clique em "Abrir Mesmo Assim". A versão de Windows ainda não foi testada.
+
+            **English:** download `SP-Drone-Stab-mac.dmg`, open it and drag SP Drone Stab to Applications (it installs next to Gyroflow). On the first launch, open System Settings > Privacy & Security and click "Open Anyway". The Windows build hasn't been tested yet.
+
+            Based on [Gyroflow](https://github.com/gyroflow/gyroflow) by Adrian Eddy, with the DJI Gyrogate repair of FPV Flow by Rodrigo Sclosa. GPL-3.0.

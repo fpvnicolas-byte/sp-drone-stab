@@ -16,8 +16,8 @@ SP Drone Stab stabilizes FPV footage from the motion data your camera records. I
 all, for the O4 units whose gyro records false motion, which makes the usual corrections leave the video jumpy or wobbly
 like jelly.
 
-> **Status: in development.** There is no release yet. The first macOS test builds are being produced now. The features
-> below are in the code but haven't been tested by users yet.
+> **Status: first test version.** macOS is the tested platform. Windows builds are published too but haven't been
+> tested yet.
 
 ## What it does
 
@@ -37,13 +37,15 @@ like jelly.
 
 ## Download
 
-There is no release yet. Releases will be published on the
-[Releases page](https://github.com/fpvnicolas-byte/sp-drone-stab/releases).
+- **macOS (Apple Silicon and Intel):** [SP-Drone-Stab-mac.dmg](https://github.com/fpvnicolas-byte/sp-drone-stab/releases/latest/download/SP-Drone-Stab-mac.dmg).
+  Open it and drag **SP Drone Stab** to Applications. It installs next to Gyroflow, it doesn't replace it. The app isn't
+  signed by Apple, so on the first launch macOS blocks it: open **System Settings > Privacy & Security** and click
+  **Open Anyway**.
+- **Windows (untested):** [SP-Drone-Stab-windows64.zip](https://github.com/fpvnicolas-byte/sp-drone-stab/releases/latest/download/SP-Drone-Stab-windows64.zip).
+  Extract it anywhere and run `Gyroflow.exe`.
 
-Until then, test builds of open pull requests are available as build artifacts on the
-[Actions page](https://github.com/fpvnicolas-byte/sp-drone-stab/actions) (you need to be signed in to GitHub). The macOS
-build isn't signed by Apple, so on the first launch macOS blocks it: open **System Settings > Privacy & Security** and
-click **Open Anyway**.
+All versions are on the [Releases page](https://github.com/fpvnicolas-byte/sp-drone-stab/releases). The official
+Gyroflow is at [gyroflow.xyz](https://gyroflow.xyz); this is not it.
 
 ## Problems and suggestions
 
