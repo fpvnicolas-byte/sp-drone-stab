@@ -13,6 +13,11 @@ pub struct IMUTransforms {
     pub acc_rotation: Option<Rotation3<f64>>,
     pub imu_lpf: f64,
     pub imu_mf: i32,
+    /// DJI O4 "Gyrogate" repair of the attitude quaternions, see `crate::gyrogate`
+    #[serde(default)]
+    pub gyrogate_filter: bool,
+    #[serde(default)]
+    pub gyrogate_strength: f64,
     pub gyro_bias: Option<[f64; 3]>,
 }
 /// The same settings, bit for bit: what tells a change of them (`GyroSource::integrate_shared`), as the motion data's
@@ -28,6 +33,8 @@ impl PartialEq for IMUTransforms {
             && rotation(&self.acc_rotation) == rotation(&other.acc_rotation)
             && self.imu_lpf.to_bits() == other.imu_lpf.to_bits()
             && self.imu_mf == other.imu_mf
+            && self.gyrogate_filter == other.gyrogate_filter
+            && self.gyrogate_strength.to_bits() == other.gyrogate_strength.to_bits()
             && bits(self.gyro_bias) == bits(other.gyro_bias)
     }
 }

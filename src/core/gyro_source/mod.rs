@@ -174,6 +174,7 @@ impl GyroSource {
             integration_method: 2, // VQF
             use_gravity_vectors: false,
             horizon_lock_integration_method: 1, // VQF
+            imu_transforms: IMUTransforms { gyrogate_strength: 50.0, ..Default::default() },
             ..Default::default()
         }
     }
@@ -1033,6 +1034,8 @@ impl GyroSource {
         self.imu_transforms.acc_rotation = None;
         self.imu_transforms.imu_lpf = 0.0;
         self.imu_transforms.imu_mf = 0;
+        self.imu_transforms.gyrogate_filter = false;
+        self.imu_transforms.gyrogate_strength = 50.0;
         self.file_metadata = Default::default();
         self.optical_correction = None;
         // What the last `integrate` made of the orientations cleared above: a file whose orientations are loaded as they
@@ -1120,6 +1123,15 @@ impl GyroSource {
                     } else {
                         quats.into_owned()
                     };
+                    // Before the low-pass: it removes the raw sensor bursts of a DJI O4 and the fusion's pull-back of
+                    // them, which the low-pass would smear
+                    if self.imu_transforms.gyrogate_filter && quats.len() >= 8 {
+                        let settings = crate::gyrogate::Settings::from_strength(self.imu_transforms.gyrogate_strength);
+                        let (removed, tremor_s) = crate::gyrogate::memory::repair(&mut quats, &settings);
+                        if removed > 0 || tremor_s > 0.0 {
+                            log::info!("Gyrogate: removed {} false burst(s), {:.1} s of tremor", removed, tremor_s);
+                        }
+                    }
                     if self.imu_transforms.imu_lpf > 0.0 && !quats.is_empty() && duration_ms > 0.0 {
                         let sample_rate = quats.len() as f64 / (duration_ms / 1000.0);
                         if let Err(e) = super::filtering::Lowpass::filter_quats_forward_backward(self.imu_transforms.imu_lpf, sample_rate, &mut quats) {
@@ -1742,6 +1754,8 @@ impl GyroSource {
         hasher.write_u64(self.duration_ms.to_bits());
         hasher.write_u64(self.imu_transforms.imu_lpf.to_bits());
         hasher.write_i32(self.imu_transforms.imu_mf);
+        hasher.write_u8(if self.imu_transforms.gyrogate_filter { 1 } else { 0 });
+        hasher.write_u64(self.imu_transforms.gyrogate_strength.to_bits());
         hasher.write_usize(self.raw_imu.len());
         hasher.write_usize(file_metadata.raw_imu.len());
         hasher.write_usize(self.quaternions.len());

@@ -238,8 +238,8 @@ fn main() {
             res.set_icon("resources/app_icon.ico");
             res.set("FileVersion", env!("CARGO_PKG_VERSION"));
             res.set("ProductVersion", env!("CARGO_PKG_VERSION"));
-            res.set("ProductName", "Gyroflow");
-            res.set("FileDescription", &format!("Gyroflow v{}", env!("CARGO_PKG_VERSION")));
+            res.set("ProductName", "SP Drone Stab");
+            res.set("FileDescription", &format!("SP Drone Stab v{} (based on Gyroflow)", env!("CARGO_PKG_VERSION")));
             res.compile().unwrap();
         }
         tos => panic!("unknown target os {:?}!", tos)
