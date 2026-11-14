@@ -195,8 +195,9 @@ jobs:
   github_release:
     name: Create GitHub release
     needs: build
-    # SP Drone Stab ships macOS and Windows; the other platforms failing must not hold the release back
-    if: ${{ !cancelled() && startsWith(github.ref, 'refs/tags/') }}
+    # SP Drone Stab ships macOS and Windows; the other platforms failing must not hold the release back.
+    # Every merge to main publishes a release by itself (or a pushed tag, under its own name)
+    if: ${{ !cancelled() && (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -215,7 +216,9 @@ jobs:
       - name: Publish
         uses: softprops/action-gh-release@v2
         with:
-          name: SP Drone Stab ${{ github.ref_name }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v1.7.0-sp{0}', github.run_number) }}
+          target_commitish: ${{ github.sha }}
+          name: SP Drone Stab ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v1.7.0-sp{0}', github.run_number) }}
           prerelease: false
           make_latest: true
           files: release/*
