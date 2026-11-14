@@ -201,8 +201,18 @@ deploy *param:
         cp -Rf "$PROJECT_DIR/_deployment/mac/Gyroflow.app"    "$PROJECT_DIR/_deployment/_binaries/mac/"
         cp -f  "$PROJECT_DIR/target/deploy/gyroflow"          "$PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app/Contents/MacOS/"
         strip "$PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app/Contents/MacOS/gyroflow"
-        cp -Rf "$PROJECT_DIR/target/Frameworks/mdk.framework" "$PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app/Contents/Frameworks/" || true
-        cp -Rf "$PROJECT_DIR/target/x86_64-apple-darwin/Frameworks/mdk.framework" "$PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app/Contents/Frameworks/"
+        # qml-video-rs copies mdk.framework a fixed number of folders above its OUT_DIR, which newer cargo nests deeper:
+        # look for it there, then take it from the extracted SDK itself
+        MDK_FRAMEWORK=""
+        for d in "$PROJECT_DIR/target/Frameworks" "$PROJECT_DIR/target/x86_64-apple-darwin/Frameworks" "$PROJECT_DIR/target/x86_64-apple-darwin/deploy/Frameworks" "$PROJECT_DIR/target/deploy/Frameworks"; do
+            if [ -z "$MDK_FRAMEWORK" ] && [ -d "$d/mdk.framework" ]; then MDK_FRAMEWORK="$d/mdk.framework"; fi
+        done
+        if [ -z "$MDK_FRAMEWORK" ]; then
+            MDK_FRAMEWORK=$(find "$PROJECT_DIR/target" -type d -path "*/mdk-sdk/lib/mdk.framework" -prune 2>/dev/null | head -n 1)
+        fi
+        if [ -z "$MDK_FRAMEWORK" ]; then echo "mdk.framework not found under $PROJECT_DIR/target"; exit 1; fi
+        echo "Using $MDK_FRAMEWORK"
+        cp -Rf "$MDK_FRAMEWORK" "$PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app/Contents/Frameworks/"
         # cp -Rf "$PROJECT_DIR/resources/camera_presets"        "$PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app/Contents/Resources/"
         # rm -rf "$PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app/Contents/Resources/camera_presets/.git"
         cp -f "$PROJECT_DIR/resources/camera_presets/profiles.cbor.gz" "$PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app/Contents/Resources/camera_presets/profiles.cbor.gz"
@@ -329,6 +339,9 @@ deploy *param:
             codesign -vvvv --strict --options runtime --timestamp --force -s $SIGNING_FINGERPRINT $PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app
 
             codesign -vvvv --deep --verify $PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app
+        else
+            # No Developer ID: ad-hoc sign so the app still runs on Apple Silicon (the user must allow it in Privacy & Security)
+            codesign --force --deep -s - $PROJECT_DIR/_deployment/_binaries/mac/Gyroflow.app
         fi
 
         if [ -z "$DONT_BUILD_DMG" ]; then

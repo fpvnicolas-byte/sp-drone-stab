@@ -24,6 +24,8 @@ jobs:
     env:
       BUILD_APP_STORE_BUNDLE: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
       IS_MANUAL_DISPATCH: ${{ github.event_name == 'workflow_dispatch' }}
+      # Without Apple certificates (forks, SP Drone Stab) build an unsigned macOS app instead of failing
+      HAS_MAC_CERT: ${{ secrets.MACOS_CERTIFICATES != '' }}
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
@@ -59,7 +61,7 @@ jobs:
           rm -r -force ${{ github.workspace }}/target/release/build/qml-video-rs* -ErrorAction SilentlyContinue
 
       - name: Install Mac certificates
-        if: ${{ matrix.targets.os == 'macos-13' || matrix.targets.os == 'macos-15' || matrix.targets.os == 'macos-15' || matrix.targets.os == 'macos-26' }}
+        if: ${{ env.HAS_MAC_CERT == 'true' && (matrix.targets.os == 'macos-13' || matrix.targets.os == 'macos-15' || matrix.targets.os == 'macos-26') }}
         uses: apple-actions/import-codesign-certs@v3
         with:
           p12-file-base64: ${{ secrets.MACOS_CERTIFICATES }}
@@ -104,8 +106,10 @@ jobs:
           sudo pfctl -E
           just install-deps
           just deploy universal
-          xcrun notarytool submit --wait --apple-id ${{ secrets.MACOS_ACCOUNT_USER }} --team-id ${{ secrets.MACOS_TEAM }} --password ${{ secrets.MACOS_ACCOUNT_PASS }} ${{ github.workspace }}/_deployment/_binaries/Gyroflow-mac-universal.dmg
-          xcrun stapler staple --verbose ${{ github.workspace }}/_deployment/_binaries/Gyroflow-mac-universal.dmg
+          if [ "$SIGNING_FINGERPRINT" != "" ]; then
+            xcrun notarytool submit --wait --apple-id ${{ secrets.MACOS_ACCOUNT_USER }} --team-id ${{ secrets.MACOS_TEAM }} --password ${{ secrets.MACOS_ACCOUNT_PASS }} ${{ github.workspace }}/_deployment/_binaries/Gyroflow-mac-universal.dmg
+            xcrun stapler staple --verbose ${{ github.workspace }}/_deployment/_binaries/Gyroflow-mac-universal.dmg
+          fi
 
       - name: Build Gyroflow (macOS App Store)
         if: ${{ matrix.targets.type == 'macstore' && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch') }}
