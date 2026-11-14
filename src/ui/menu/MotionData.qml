@@ -11,7 +11,7 @@ MenuItem {
     id: root;
     text: qsTr("Motion data");
     iconName: "chart";
-    loader: controller.loading_gyro_in_progress || root.gyrogateBusy || root.safeModeBusy;
+    loader: controller.loading_gyro_in_progress || root.gyrogateBusy;
     objectName: "motiondata";
 
     property alias hasQuaternions: integrator.hasQuaternions;
@@ -37,6 +37,8 @@ MenuItem {
     property var safeModeInfo: null;
     property bool safeModeBusy: false;
     property real safeModeProgress: 0;
+    // When the image analysis started, for the time left shown while it runs
+    property real safeModeStartedAt: 0;
     readonly property bool gyrogateRecommended: !!gyrogate && !!gyrogate.summary && (gyrogate.summary.bursts > 0 || gyrogate.summary.tremor_seconds > 0)
                                                 && gyrogate.unit.chip != "mp66" && !gyrogate.repaired_copy;
 
@@ -513,6 +515,7 @@ MenuItem {
         onTriggered: {
             root.safeModeBusy = true;
             root.safeModeProgress = 0;
+            root.safeModeStartedAt = Date.now();
             controller.analyze_safe_mode();
         }
     }
@@ -536,10 +539,25 @@ MenuItem {
                                                 : qsTr("strong shake"));
             return names.join(", ");
         }
+        // "Stretch 2 of 5, 31%, about 1 min left": the analysis takes minutes on a long 4K clip and has to look alive
+        function busyText(found: var): string {
+            const p = Math.max(0, Math.min(1, root.safeModeProgress));
+            const count = Math.max(1, found.count);
+            const current = Math.min(count, Math.floor(p * count) + 1);
+            let t = qsTr("Shaky stretches found (%1 s). Measuring the camera motion from the image in them: stretch %2 of %3, %4%.")
+                        .arg(found.seconds.toFixed(0)).arg(current).arg(count).arg(Math.round(p * 100));
+            const elapsed = (Date.now() - root.safeModeStartedAt) / 1000;
+            if (p > 0.03 && elapsed > 5) {
+                const left = elapsed * (1 - p) / p;
+                t += " " + (left < 60? qsTr("Less than a minute left.") : qsTr("About %n min left.", "", Math.round(left / 60)));
+            }
+            t += " " + qsTr("You can keep working meanwhile.");
+            return t;
+        }
         function text(): string {
             const found = root.safeModeFound;
             if (!found) return "";
-            if (root.safeModeBusy) return qsTr("Shaky stretches found: stabilizing them from the image... %1%").arg(Math.round(root.safeModeProgress * 100));
+            if (root.safeModeBusy) return busyText(found);
             const info = root.safeModeInfo;
             const where = qsTr("%n stretch(es), %1 s in total (%2).", "", found.count).arg(found.seconds.toFixed(1)).arg(reasonsText(found.reasons));
             if (!info) return qsTr("The motion data is unreliable in %1").arg(where);
@@ -559,7 +577,7 @@ MenuItem {
         }
         CheckBoxWithContent {
             id: safeModecb;
-            text: qsTr("Safe mode: stabilize shaky stretches from the image");
+            text: qsTr("Safe mode for shaky stretches");
             checked: true;
             tooltip: qsTr("Where the motion data can't be trusted (false rotations of a DJI O4 gyro, gyro tremor or strong shake), the camera motion is measured from the video itself in those stretches only, like \"Ignore motion data from the file\" does for a whole clip. The rest of the clip keeps the motion data, so it stays fast.");
             onCheckedChanged: {
