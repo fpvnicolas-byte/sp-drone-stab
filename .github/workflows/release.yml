@@ -5,6 +5,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A push to a PR branch starts both a push run and a pull_request run; keep only the newest one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   build:
     strategy:
