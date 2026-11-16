@@ -2,6 +2,7 @@
 // Copyright © 2021-2022 Adrian <adrian.eddy at gmail>
 #![recursion_limit = "256"]
 
+pub mod color;
 pub mod gyro_source;
 pub mod gyrogate;
 pub mod safe_mode;
@@ -1261,6 +1262,51 @@ impl StabilizationManager {
     pub fn set_frame_offset          (&self, v: i32)  { self.params.write().frame_offset           = v; }
     pub fn set_light_refraction_coefficient(&self, v: f64) { self.params.write().light_refraction_coefficient = v; self.invalidate_zooming(); }
     pub fn set_background_color      (&self, bg: Vector4<f32>) { self.params.write().background = bg; }
+
+    /// Loads a `.cube` file and applies it to every backend.
+    ///
+    /// Returns the parse error rather than logging it: a bad LUT is something the
+    /// user chose and needs to see, unlike an internal failure.
+    /// `url` is a filesystem URL, not a plain path - the project reads through
+    /// its own layer so Android content:// URIs work the same as local files.
+    pub fn load_color_lut(&self, url: &str) -> Result<(), color::lut::LutParseError> {
+        let lut = color::lut::parse_cube(url)?;
+        self.stabilization.write().set_color_lut(Some(std::sync::Arc::new(lut)));
+        Ok(())
+    }
+
+    /// Removes the loaded LUT, restoring the identity table.
+    pub fn clear_color_lut(&self) { self.stabilization.write().set_color_lut(None); }
+
+    /// Sets the LUT strength, 0..1.
+    pub fn set_color_lut_amount(&self, v: f32) { self.stabilization.write().set_color_lut_amount(v); }
+
+    /// Current LUT strength, 0..1.
+    pub fn color_lut_amount(&self) -> f32 { self.stabilization.read().color_lut_amount() }
+
+    /// Sets one color adjustment by name.
+    pub fn set_color_adjustment(&self, name: &str, v: f32) { self.stabilization.write().set_color_adjustment(name, v); }
+
+    /// Reads one color adjustment by name.
+    pub fn color_adjustment(&self, name: &str) -> f32 { self.stabilization.read().color_adjustment(name) }
+
+    /// Resets every color adjustment.
+    pub fn reset_color_adjustments(&self) { self.stabilization.write().reset_color_adjustments(); }
+
+    /// Path of the loaded LUT, or an empty string.
+    pub fn color_lut_path(&self) -> String {
+        self.stabilization.read().color_lut().map(|l| l.path.clone()).unwrap_or_default()
+    }
+
+    /// `TITLE` of the loaded LUT, when the file declares one.
+    pub fn color_lut_title(&self) -> Option<String> {
+        self.stabilization.read().color_lut().and_then(|l| l.title.clone())
+    }
+
+    /// Cube edge of the loaded LUT, or 0 when none is loaded.
+    pub fn color_lut_size(&self) -> usize {
+        self.stabilization.read().color_lut().map(|l| l.size()).unwrap_or(0)
+    }
     pub fn set_background_mode       (&self, v: i32)  { self.params.write().background_mode = stabilization_params::BackgroundMode::from(v); }
     pub fn set_background_margin     (&self, v: f64)  { self.params.write().background_margin = v; }
     pub fn set_background_margin_feather(&self, v: f64) { self.params.write().background_margin_feather = v; }
@@ -1925,7 +1971,7 @@ impl StabilizationManager {
     }
 
     pub fn get_cloned(&self) -> StabilizationManager {
-        StabilizationManager {
+        let new = StabilizationManager {
             params: Arc::new(RwLock::new(self.params.read().clone())),
             gyro:   Arc::new(RwLock::new(self.gyro.read().clone())),
             lens:   Arc::new(RwLock::new(self.lens.read().clone())),
@@ -1952,7 +1998,27 @@ impl StabilizationManager {
             // optical_measurements: they take a lot of memory, and a clone has nothing to refit
             // optical_overlay: the preview's
             ..Default::default()
+        };
+
+        // `stabilization` is deliberately not cloned - it owns GPU handles that
+        // must not be shared. But the color state lives there too, and it is
+        // plain data, so it has to be carried over by hand: the render queue
+        // builds its job from this clone, and without this the export comes out
+        // ungraded while the preview looks right.
+        {
+            let src = self.stabilization.read();
+            let lut = src.color_lut_arc();
+            let amount = src.color_lut_amount();
+            let adjustments = src.color_adjustments();
+            drop(src);
+
+            let mut dst = new.stabilization.write();
+            dst.set_color_lut(lut);
+            dst.set_color_lut_amount(amount);
+            dst.set_color_adjustments(adjustments);
         }
+
+        new
     }
     pub fn set_render_params(&self, size: (usize, usize), output_size: (usize, usize)) {
         self.params.write().framebuffer_inverted = false;

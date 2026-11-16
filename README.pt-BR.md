@@ -32,6 +32,10 @@ comuns deixarem o vídeo pulando ou com jello.
   o giroscópio no resto do vídeo. A linha do tempo marca esses trechos em âmbar, e o app explica em palavras simples o
   que fez. É a mesma estabilização só pela imagem do "Ignore motion data from the file" do Gyroflow, mas apenas onde
   precisa: o resto do vídeo mantém a precisão do giroscópio e não precisa da análise de imagem, que é mais lenta.
+- **Cor com LUT, direto na exportação.** Gravou em D-Log M ou outro perfil plano? Carregue o LUT `.cube` dele no
+  painel **Cor** e o arquivo exportado já sai com as cores normais, sem precisar passar de novo pelo editor. Tem controle
+  de intensidade, uma pasta com os seus LUTs a um clique e 13 ajustes (exposição, contraste, realces, sombras, balanço
+  de branco, saturação, nitidez, vinheta e outros). Trazido do FPV Flow.
 - **Tudo o que o Gyroflow 1.7.0 faz**: perfis de lente, correção de rolling shutter, correção e sincronização óptica,
   algoritmos de suavização, renderização na placa de vídeo, keyframes e fila de renderização.
 
@@ -61,7 +65,8 @@ O SP Drone Stab é construído sobre o trabalho destes projetos de código abert
   [README do Gyroflow](https://github.com/gyroflow/gyroflow#readme) para a lista completa de recursos, câmeras
   suportadas, autores e agradecimentos.
 - **[FPV Flow](https://github.com/rodrigosclosa/fpvflow)**, de Rodrigo Sclosa, GPL-3.0 ou posterior. A detecção e o
-  conserto do Gyrogate (`src/core/gyrogate`) foram trazidos do FPV Flow.
+  conserto do Gyrogate (`src/core/gyrogate`) e o painel de cor com LUTs `.cube` e ajustes (`src/core/color`,
+  `src/ui/menu/ColorLut.qml`) foram trazidos do FPV Flow.
 - **[o4fix](https://github.com/vadimbryl/o4fix)**, de vadimbryl, MIT. O conserto do FPV Flow é uma adaptação do o4fix.
 
 ## Como compilar

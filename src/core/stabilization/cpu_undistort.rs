@@ -159,9 +159,13 @@ fn spirv_kernel_params(params: &KernelParams) -> stabilize_spirv::KernelParams {
         light_refraction_coefficient: p.light_refraction_coefficient,
         plane_index:               p.plane_index,
         output_projection:         p.output_projection,
-        reserved2:                 p.reserved2,
+        lut_amount:                p.lut_amount,
         ewa_coeffs_p:              Vec4::from_array(p.ewa_coeffs_p),
         ewa_coeffs_q:              Vec4::from_array(p.ewa_coeffs_q),
+        color_adjust1:             Vec4::from_array(p.color_adjust1),
+        color_adjust2:             Vec4::from_array(p.color_adjust2),
+        color_adjust3:             Vec4::from_array(p.color_adjust3),
+        color_adjust4:             Vec4::from_array(p.color_adjust4),
     }
 }
 
@@ -531,7 +535,7 @@ impl Stabilization {
     // Adapted from OpenCV: initUndistortRectifyMap + remap
     // https://github.com/opencv/opencv/blob/2b60166e5c65f1caccac11964ad760d847c536e4/modules/calib3d/src/fisheye.cpp#L465-L567
     // https://github.com/opencv/opencv/blob/2b60166e5c65f1caccac11964ad760d847c536e4/modules/imgproc/src/opencl/remap.cl#L390-L498
-    pub fn undistort_image_cpu<const I: i32, T: PixelType>(buffers: &mut Buffers, params: &KernelParams, distortion_model: &DistortionModel, digital_lens: Option<&DistortionModel>, matrices: &[[f32; 16]], drawing: &[u8], mesh_data: &[f32]) -> bool {
+    pub fn undistort_image_cpu<const I: i32, T: PixelType>(buffers: &mut Buffers, params: &KernelParams, distortion_model: &DistortionModel, digital_lens: Option<&DistortionModel>, matrices: &[[f32; 16]], drawing: &[u8], mesh_data: &[f32], color_lut: Option<&crate::color::lut::Lut>) -> bool {
         // #[cold]
         // fn draw_pixel(pix: &mut Vector4<f32>, x: i32, y: i32, is_input: bool, width: i32, params: &KernelParams, drawing: &[u8]) {
         //     if drawing.is_empty() || (params.flags & 8) == 0 { return; }
@@ -558,6 +562,41 @@ impl Stabilization {
             else    { *px *= 0.87843137; } // (240 - 16) / 255
             px[0] += 16.0;
             px[1] += 16.0;
+        }
+
+        // Applies the color LUT, reusing Lut::sample rather than reimplementing
+        // the interpolation - this path is plain Rust, so unlike the shaders it
+        // can call the tested code directly.
+        //
+        // The pixel is in the pipeline's scale (0..max_pixel_value), not 0..1.
+        #[inline]
+        fn apply_color_lut(px: &mut Vector4<f32>, lut: &crate::color::lut::Lut, max_pixel_value: f32, amount: f32) {
+            if amount <= 0.0 { return; }
+            let rgb = [
+                (px[0] / max_pixel_value).clamp(0.0, 1.0),
+                (px[1] / max_pixel_value).clamp(0.0, 1.0),
+                (px[2] / max_pixel_value).clamp(0.0, 1.0),
+            ];
+            let out = lut.sample(rgb);
+            // Blended against the original, so the slider fades the grade in.
+            for ch in 0..3 {
+                px[ch] += (out[ch] * max_pixel_value - px[ch]) * amount;
+            }
+        }
+
+        // Per-pixel color adjustments, applied after the LUT.
+        //
+        // Must stay in step with apply_color_adjustments in wgpu_undistort.wgsl,
+        // opencl_undistort.cl and qt_gpu/undistort.frag - same order, same
+        // constants. This is the only one of the four that is unit-tested.
+        #[inline]
+        fn apply_color_adjustments(px: &mut Vector4<f32>, out_pos: (f32, f32), params: &KernelParams) {
+            crate::color::adjustments::apply(
+                px, out_pos,
+                &[params.color_adjust1, params.color_adjust2, params.color_adjust3, params.color_adjust4],
+                params.max_pixel_value,
+                (params.output_width as f32, params.output_height as f32),
+            );
         }
 
         ////////////////////////////// EWA (Elliptical Weighted Average) CubicBC sampling //////////////////////////////
@@ -813,6 +852,11 @@ impl Stabilization {
                                     let c2 = sample_input_at::<I, T>(pt2, &jac, input, params, &bg, drawing); // FIXME: jac should be adjusted for pt2
                                     pixel = c1 * alpha + c2 * (1.0 - alpha);
                                     // draw_pixel(&mut pixel, p.0 as i32, p.1 as i32, false, params.output_width, params, drawing);
+                                    // Before remap_colorrange, which compresses to
+                                    // limited range - the LUT domain is full range.
+                                    // This branch returns early.
+                                    if let Some(lut) = color_lut { apply_color_lut(&mut pixel, lut, params.max_pixel_value, params.lut_amount); }
+                            apply_color_adjustments(&mut pixel, (x as f32, y as f32), params);
                                     if fix_range {
                                         remap_colorrange(&mut pixel, is_y)
                                     }
@@ -824,6 +868,8 @@ impl Stabilization {
                             }
                             // draw_pixel(&mut pixel, p.0 as i32, p.1 as i32, false, params.output_width, params, drawing);
 
+                            if let Some(lut) = color_lut { apply_color_lut(&mut pixel, lut, params.max_pixel_value, params.lut_amount); }
+                            apply_color_adjustments(&mut pixel, (x as f32, y as f32), params);
                             if fix_range {
                                 remap_colorrange(&mut pixel, is_y)
                             }

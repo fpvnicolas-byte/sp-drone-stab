@@ -151,6 +151,7 @@ Item {
                 window.stab.loadGyroflow(obj);
                 window.advanced.loadGyroflow(obj);
                 window.sync.loadGyroflow(obj);
+                if (window.colorLut) window.colorLut.loadGyroflow(obj);
                 window.lensProfile.loadGyroflow(obj);
                 Qt.callLater(window.exportSettings.loadGyroflow, obj);
 

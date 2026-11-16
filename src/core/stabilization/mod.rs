@@ -182,12 +182,33 @@ pub struct KernelParams {
     pub plane_index:              i32, // 8
     /// [`crate::stabilization::projection::OutputProjection`] as `i32`
     pub output_projection:        i32, // 12
-    pub reserved2:                f32, // 16
+    pub lut_amount:               f32, // 16 - color LUT strength, 0..1
     pub ewa_coeffs_p:             [f32; 4], // 16
     pub ewa_coeffs_q:             [f32; 4], // 16
+    /// Per-pixel color adjustments, applied after the LUT in Rec.709.
+    /// Normalized to -1..1 by `ColorAdjustments::to_gpu`, which is the single
+    /// UI -> shader conversion point.
+    /// `[exposure, luminance, contrast, highlights]`
+    pub color_adjust1:            [f32; 4], // 16
+    /// `[shadows, whites, blacks, temperature]`
+    pub color_adjust2:            [f32; 4], // 16
+    /// `[tint, saturation, vibrance, vignette]`
+    pub color_adjust3:            [f32; 4], // 16
+    /// `[sharpness, unused, unused, unused]` - sharpness is read by the spatial
+    /// stage, not the per-pixel one.
+    pub color_adjust4:            [f32; 4], // 16
 }
 unsafe impl bytemuck::Zeroable for KernelParams {}
 unsafe impl bytemuck::Pod for KernelParams {}
+
+// cpu_undistort.rs transmutes this into stabilize_spirv::KernelParams, which is
+// declared separately because that crate is no_std and uses glam's Vec4. If the
+// two ever drift apart the transmute is undefined behaviour, so pin the size
+// here rather than find out at runtime.
+const _: () = assert!(
+    std::mem::size_of::<KernelParams>() == std::mem::size_of::<stabilize_spirv::KernelParams>(),
+    "KernelParams and stabilize_spirv::KernelParams must stay the same size - they are transmuted"
+);
 
 #[derive(Default, Debug)]
 pub enum BackendType {
@@ -218,7 +239,6 @@ impl std::ops::DerefMut for FrameTransformCache {
     fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0 }
 }
 
-#[derive(Default)]
 pub struct Stabilization {
     pub stab_data: FrameTransformCache,
 
@@ -244,7 +264,66 @@ pub struct Stabilization {
 
     pub share_wgpu_instances: bool,
     pub cache_frame_transform: bool,
-    next_backend: Option<&'static str>
+    next_backend: Option<&'static str>,
+
+    /// The loaded color LUT, or `None` for no grading.
+    ///
+    /// Kept here rather than only inside the backend wrappers because a wrapper
+    /// can be dropped and rebuilt at any time - on a resize, a device change, or
+    /// a cache eviction - and it can also live in the shared thread-local cache
+    /// instead of `self.wgpu`. This is the copy that survives, and it is
+    /// re-applied whenever a backend is initialized.
+    color_lut: Option<std::sync::Arc<crate::color::lut::Lut>>,
+
+    /// Bumped on every change to `color_lut`.
+    ///
+    /// The Qt RHI preview lives on the render thread and cannot borrow the table,
+    /// so it keeps its own uploaded copy; comparing versions tells it whether the
+    /// ~4 MB payload actually needs to cross again. 0 means "never set", which is
+    /// the identity table every backend starts with.
+    color_lut_version: u64,
+
+    /// `color_lut` resampled to the texture size, rebuilt once per change.
+    color_lut_payload: Option<crate::color::lut::LutTexture>,
+
+    /// LUT strength, 0..1. Reaches the shaders as `KernelParams::lut_amount`.
+    ///
+    /// Defaults to 1.0, not 0.0: a loaded LUT applies fully unless the user says
+    /// otherwise. This is why `Default` is written out below instead of derived -
+    /// every construction site uses `Stabilization::default()`, including the
+    /// export path, so a derived zero would silently hide every LUT there.
+    color_lut_amount: f32,
+
+    /// Every color adjustment, in UI units. Normalized at the shader boundary.
+    color_adjustments: crate::color::adjustments::ColorAdjustments
+}
+
+impl Default for Stabilization {
+    fn default() -> Self {
+        Self {
+            stab_data: Default::default(),
+            size: Default::default(),
+            output_size: Default::default(),
+            interpolation: Default::default(),
+            kernel_flags: Default::default(),
+            #[cfg(feature = "use-opencl")]
+            cl: None,
+            wgpu: None,
+            initialized_backend: Default::default(),
+            compute_params: Default::default(),
+            upright_params: Default::default(),
+            drawing: Default::default(),
+            pending_device_change: None,
+            share_wgpu_instances: Default::default(),
+            cache_frame_transform: Default::default(),
+            next_backend: None,
+            color_lut: None,
+            color_lut_version: 0,
+            color_lut_payload: None,
+            color_lut_amount: 1.0,
+            color_adjustments: Default::default(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -274,6 +353,126 @@ impl Stabilization {
     }
     /// Whether the frames are rendered upside down (`ComputeParams::framebuffer_inverted`): the drawing is turned with them
     pub fn framebuffer_inverted(&self) -> bool { self.compute_params.framebuffer_inverted }
+
+    /// Sets the color LUT, or clears it with `None`.
+    ///
+    /// Uploads to whichever backend is live and remembers the table, so it can be
+    /// restored when a backend is rebuilt. It deliberately does **not** invalidate
+    /// `initialized_backend`: the texture is allocated at a fixed size, so
+    /// swapping tables never invalidates a pipeline or a bind group, and forcing
+    /// a rebuild here would stall the preview on every slider move.
+    pub fn set_color_lut(&mut self, lut: Option<std::sync::Arc<crate::color::lut::Lut>>) {
+        self.color_lut = lut;
+        self.invalidate_color();
+        // Saturating, not wrapping: 0 is reserved for "never set", and a wrap back
+        // to it would make a changed LUT look unchanged.
+        self.color_lut_version = self.color_lut_version.saturating_add(1);
+        self.color_lut_payload = self.color_lut.as_deref()
+            .and_then(|l| crate::color::lut::LutTexture::resampled_to_max(l, crate::color::lut::LutLayout::Volume3D));
+
+        if let Some(ref mut wgpu) = self.wgpu {
+            wgpu.set_lut(self.color_lut.as_deref());
+        }
+        if self.share_wgpu_instances {
+            if let BackendType::Wgpu(hash) = self.initialized_backend {
+                CACHED_WGPU.with(|x| {
+                    if let Some(w) = x.0.borrow_mut().get_mut(&hash) { w.set_lut(self.color_lut.as_deref()); }
+                });
+            }
+        }
+
+        #[cfg(feature = "use-opencl")]
+        {
+            let apply = |cl: &mut opencl::OclWrapper| {
+                if let Err(e) = cl.set_lut(self.color_lut.as_deref()) {
+                    log::error!("Failed to upload the color LUT to OpenCL: {e:?}");
+                }
+            };
+            if let Some(ref mut cl) = self.cl { apply(cl); }
+            if self.share_wgpu_instances {
+                if let BackendType::OpenCL(hash) = self.initialized_backend {
+                    CACHED_OPENCL.with(|x| {
+                        if let Some(c) = x.borrow_mut().get_mut(&hash) { apply(c); }
+                    });
+                }
+            }
+        }
+    }
+
+    /// The currently loaded color LUT, if any.
+    pub fn color_lut(&self) -> Option<&crate::color::lut::Lut> {
+        self.color_lut.as_deref()
+    }
+
+    /// The loaded LUT as a shared handle, for copying the color state onto
+    /// another `Stabilization` - the export builds one per image plane.
+    pub fn color_lut_arc(&self) -> Option<std::sync::Arc<crate::color::lut::Lut>> {
+        self.color_lut.clone()
+    }
+
+    /// Sets the LUT strength, clamped to 0..1.
+    ///
+    /// Cheap on purpose: it only writes a uniform, so dragging the slider does not
+    /// re-upload the table or rebuild a pipeline.
+    pub fn set_color_lut_amount(&mut self, amount: f32) {
+        self.color_lut_amount = amount.clamp(0.0, 1.0);
+        self.invalidate_color();
+    }
+
+    /// Current LUT strength, 0..1.
+    pub fn color_lut_amount(&self) -> f32 { self.color_lut_amount }
+
+    /// Drops the cached per-frame transforms so the new color values reach the
+    /// shaders.
+    ///
+    /// `ensure_stab_data_at_timestamp` reuses whatever is cached for a timestamp
+    /// and only rebuilds on a stride or rect change, so without this the uniforms
+    /// keep the values they had when the frame was first processed - the sliders
+    /// move and the image does not.
+    ///
+    /// Only the cache is cleared, not `initialized_backend`: the pipeline and the
+    /// bind group stay valid, since nothing here changes a texture size.
+    fn invalidate_color(&mut self) {
+        self.stab_data.clear();
+    }
+
+    /// Sets one adjustment by name, in UI units (-100..100, 0..100 for
+    /// sharpness). Unknown names are ignored, which keeps a project written by a
+    /// newer version from failing to load here.
+    pub fn set_color_adjustment(&mut self, name: &str, value: f32) {
+        self.color_adjustments.set(name, value);
+        self.invalidate_color();
+    }
+
+    /// Reads one adjustment by name, in UI units; 0.0 for an unknown one.
+    pub fn color_adjustment(&self, name: &str) -> f32 { self.color_adjustments.get(name) }
+
+    /// Every adjustment at once.
+    pub fn color_adjustments(&self) -> crate::color::adjustments::ColorAdjustments { self.color_adjustments }
+
+    /// Replaces every adjustment at once, for loading a project.
+    pub fn set_color_adjustments(&mut self, v: crate::color::adjustments::ColorAdjustments) {
+        self.color_adjustments = v;
+        self.invalidate_color();
+    }
+
+    /// Resets every adjustment to its neutral value.
+    pub fn reset_color_adjustments(&mut self) {
+        self.color_adjustments = Default::default();
+        self.invalidate_color();
+    }
+
+    /// Version of the loaded LUT; 0 means none was ever set.
+    pub fn color_lut_version(&self) -> u64 { self.color_lut_version }
+
+    /// The LUT resampled to the fixed texture size, ready to upload.
+    ///
+    /// Cached, because the Qt preview reads it on the render thread every frame:
+    /// resampling 65³ texels per frame would be pure waste, and the table only
+    /// changes on user action.
+    pub fn color_lut_payload(&self) -> Option<&crate::color::lut::LutTexture> {
+        self.color_lut_payload.as_ref()
+    }
 
     fn get_rect(desc: &BufferDescription) -> [i32; 4] {
         let mut ret = [0i32; 4];
@@ -330,6 +529,15 @@ impl Stabilization {
             transform.kernel_params.pixel_value_limit = 1.0;
             transform.kernel_params.max_pixel_value = 1.0;
         }
+        // Set here rather than in FrameTransform because the LUT belongs to this
+        // struct, not to the shared compute params - and every backend reads the
+        // transform built here, so one assignment covers all four.
+        transform.kernel_params.lut_amount = if self.color_lut.is_some() { self.color_lut_amount } else { 0.0 };
+        let adj = self.color_adjustments.to_gpu();
+        transform.kernel_params.color_adjust1 = adj[0];
+        transform.kernel_params.color_adjust2 = adj[1];
+        transform.kernel_params.color_adjust3 = adj[2];
+        transform.kernel_params.color_adjust4 = adj[3];
         transform.kernel_params.interpolation = self.interpolation as i32;
         transform.kernel_params.width  = self.size.0 as i32;
         transform.kernel_params.height = self.size.1 as i32;
@@ -557,7 +765,14 @@ impl Stabilization {
                         opencl::OclWrapper::new(&params, T::ocl_names(), distortion_model, digital_lens, buffers, canvas_len)
                     });
                     match cl {
-                        Ok(Ok(cl)) => {
+                        Ok(Ok(mut cl)) => {
+                            // Same as the wgpu branch below: a fresh wrapper holds
+                            // an identity LUT, so re-apply the loaded one.
+                            if self.color_lut.is_some() {
+                                if let Err(e) = cl.set_lut(self.color_lut.as_deref()) {
+                                    log::error!("Failed to upload the color LUT to OpenCL: {e:?}");
+                                }
+                            }
                             if self.share_wgpu_instances {
                                 CACHED_OPENCL.with(|x| x.borrow_mut().put(hash, cl));
                             } else {
@@ -600,7 +815,13 @@ impl Stabilization {
                         wgpu::WgpuWrapper::new(&params, T::wgpu_format().unwrap(), distortion_model, digital_lens, buffers, canvas_len)
                     });
                     match wgpu {
-                        Ok(Ok(wgpu)) => {
+                        Ok(Ok(mut wgpu)) => {
+                            // A fresh wrapper starts with an identity LUT, so the
+                            // loaded one has to be re-applied here - this runs on
+                            // every resize, device change and cache miss.
+                            if self.color_lut.is_some() {
+                                wgpu.set_lut(self.color_lut.as_deref());
+                            }
                             if self.share_wgpu_instances {
                                 CACHED_WGPU.with(|x| x.0.borrow_mut().put(hash, wgpu));
                             } else {
@@ -779,13 +1000,13 @@ impl Stabilization {
             //let ok = Self::undistort_image_cpu_spirv::<T>(buffers, &itm.kernel_params, &self.compute_params.distortion_model, self.compute_params.digital_lens.as_ref(), &itm.matrices, drawing_buffer);
             // CPU path
             let ok = match self.interpolation {
-                Interpolation::Bilinear => { Self::undistort_image_cpu::<2, T>(buffers, &itm.kernel_params, &self.compute_params.distortion_model, self.compute_params.digital_lens.as_ref(), &itm.matrices, drawing_buffer, &itm.mesh_data) },
-                Interpolation::Bicubic  => { Self::undistort_image_cpu::<4, T>(buffers, &itm.kernel_params, &self.compute_params.distortion_model, self.compute_params.digital_lens.as_ref(), &itm.matrices, drawing_buffer, &itm.mesh_data) },
-                Interpolation::Lanczos4 => { Self::undistort_image_cpu::<8, T>(buffers, &itm.kernel_params, &self.compute_params.distortion_model, self.compute_params.digital_lens.as_ref(), &itm.matrices, drawing_buffer, &itm.mesh_data) },
-                Interpolation::RobidouxSharp => { Self::undistort_image_cpu::<10, T>(buffers, &itm.kernel_params, &self.compute_params.distortion_model, self.compute_params.digital_lens.as_ref(), &itm.matrices, drawing_buffer, &itm.mesh_data) },
-                Interpolation::Robidoux      => { Self::undistort_image_cpu::<11, T>(buffers, &itm.kernel_params, &self.compute_params.distortion_model, self.compute_params.digital_lens.as_ref(), &itm.matrices, drawing_buffer, &itm.mesh_data) },
-                Interpolation::Mitchell      => { Self::undistort_image_cpu::<12, T>(buffers, &itm.kernel_params, &self.compute_params.distortion_model, self.compute_params.digital_lens.as_ref(), &itm.matrices, drawing_buffer, &itm.mesh_data) },
-                Interpolation::CatmullRom    => { Self::undistort_image_cpu::<13, T>(buffers, &itm.kernel_params, &self.compute_params.distortion_model, self.compute_params.digital_lens.as_ref(), &itm.matrices, drawing_buffer, &itm.mesh_data) },
+                Interpolation::Bilinear => { Self::undistort_image_cpu::<2, T>(buffers, &itm.kernel_params, &self.compute_params.distortion_model, self.compute_params.digital_lens.as_ref(), &itm.matrices, drawing_buffer, &itm.mesh_data, self.color_lut.as_deref()) },
+                Interpolation::Bicubic  => { Self::undistort_image_cpu::<4, T>(buffers, &itm.kernel_params, &self.compute_params.distortion_model, self.compute_params.digital_lens.as_ref(), &itm.matrices, drawing_buffer, &itm.mesh_data, self.color_lut.as_deref()) },
+                Interpolation::Lanczos4 => { Self::undistort_image_cpu::<8, T>(buffers, &itm.kernel_params, &self.compute_params.distortion_model, self.compute_params.digital_lens.as_ref(), &itm.matrices, drawing_buffer, &itm.mesh_data, self.color_lut.as_deref()) },
+                Interpolation::RobidouxSharp => { Self::undistort_image_cpu::<10, T>(buffers, &itm.kernel_params, &self.compute_params.distortion_model, self.compute_params.digital_lens.as_ref(), &itm.matrices, drawing_buffer, &itm.mesh_data, self.color_lut.as_deref()) },
+                Interpolation::Robidoux      => { Self::undistort_image_cpu::<11, T>(buffers, &itm.kernel_params, &self.compute_params.distortion_model, self.compute_params.digital_lens.as_ref(), &itm.matrices, drawing_buffer, &itm.mesh_data, self.color_lut.as_deref()) },
+                Interpolation::Mitchell      => { Self::undistort_image_cpu::<12, T>(buffers, &itm.kernel_params, &self.compute_params.distortion_model, self.compute_params.digital_lens.as_ref(), &itm.matrices, drawing_buffer, &itm.mesh_data, self.color_lut.as_deref()) },
+                Interpolation::CatmullRom    => { Self::undistort_image_cpu::<13, T>(buffers, &itm.kernel_params, &self.compute_params.distortion_model, self.compute_params.digital_lens.as_ref(), &itm.matrices, drawing_buffer, &itm.mesh_data, self.color_lut.as_deref()) },
             };
             if ok {
                 ret.backend = "CPU";

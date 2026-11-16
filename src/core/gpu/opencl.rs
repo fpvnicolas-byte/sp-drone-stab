@@ -23,6 +23,7 @@ pub struct OclWrapper {
     buf_drawing: Buffer<u8>,
     buf_mesh_data: Buffer<f32>,
     buf_matrices: Buffer<f32>,
+    buf_lut: Buffer<f32>,
 }
 
 pub struct CtxWrapper {
@@ -175,16 +176,24 @@ impl OclWrapper {
         Ok((name, list_name))
     }
 
-    pub fn new(params: &KernelParams, ocl_names: (&str, &str, &str, &str), distortion_model: DistortionModel, digital_lens: Option<DistortionModel>, buffers: &Buffers, drawing_len: usize) -> ocl::Result<Self> {
-        if params.height < 4 || params.output_height < 4 || params.stride < 1 { return Err(ocl::BufferCmdError::AlreadyMapped.into()); }
-
+    /// Expands the kernel template into the source actually handed to the OpenCL
+    /// compiler.
+    ///
+    /// Split out of `new` so it can be tested without a device: every
+    /// substitution here changes the *types* in the source, and the compiler
+    /// type-checks the whole body regardless of which branch runs at runtime. A
+    /// `.z` access guarded only by `if (PIX_ELEMENT_COUNT < 3)` compiles fine on
+    /// the packed-RGB expansion and is a hard error on a planar one - which
+    /// surfaces as an unrelated-looking init failure and a silent fallback to
+    /// wgpu, not as a build error.
+    pub fn build_kernel_source(params: &KernelParams, ocl_names: (&str, &str, &str, &str), distortion_model: &DistortionModel, digital_lens: Option<&DistortionModel>) -> String {
         let mut kernel = include_str!("opencl_undistort.cl").to_string();
         // let mut kernel = std::fs::read_to_string("D:/programowanie/projekty/Rust/gyroflow/src/core/gpu/opencl_undistort.cl").unwrap();
 
         let mut lens_model_functions = distortion_model.opencl_functions().to_string();
         let default_digital_lens = "float2 digital_undistort_point(float2 uv, __global KernelParams *p) { return uv; }
                                         float2 digital_distort_point(float2 uv, __global KernelParams *p) { return uv; }";
-        lens_model_functions.push_str(digital_lens.as_ref().map(|x| x.opencl_functions()).unwrap_or(default_digital_lens));
+        lens_model_functions.push_str(digital_lens.map(|x| x.opencl_functions()).unwrap_or(default_digital_lens));
 
         let mut extensions = String::new();
         if ocl_names.1 == "convert_half4" {
@@ -201,6 +210,11 @@ impl OclWrapper {
                        .replace("DATA_TYPEF", ocl_names.2)
                        .replace("DATA_CONVERT", ocl_names.1)
                        .replace("DATA_TYPE", ocl_names.0)
+                       .replace("LUT_SIZE", &format!("{}", crate::color::lut::MAX_LUT_SIZE))
+                       // Channels per pixel in this pass. The colour functions need it:
+                       // on a planar YUV pass there is only luma or chroma in one call,
+                       // and a 3D LUT has nothing to work with.
+                       .replace("PIX_ELEMENT_COUNT", &format!("{}", params.pix_element_count))
                        .replace("PIXEL_BYTES", &format!("{}", params.bytes_per_pixel))
                        .replace("INTERPOLATION", &format!("{}", params.interpolation));
 
@@ -209,6 +223,14 @@ impl OclWrapper {
             if v == 4 { continue; } // Fill with background can be different per frame
             kernel = kernel.replace(&format!("(params->flags & {v})"), if (params.flags & v) == v { "true" } else { "false" });
         }
+
+        kernel
+    }
+
+    pub fn new(params: &KernelParams, ocl_names: (&str, &str, &str, &str), distortion_model: DistortionModel, digital_lens: Option<DistortionModel>, buffers: &Buffers, drawing_len: usize) -> ocl::Result<Self> {
+        if params.height < 4 || params.output_height < 4 || params.stride < 1 { return Err(ocl::BufferCmdError::AlreadyMapped.into()); }
+
+        let kernel = Self::build_kernel_source(params, ocl_names, &distortion_model, digital_lens.as_ref());
 
         {
             let ctx = CONTEXT.read();
@@ -294,6 +316,16 @@ impl OclWrapper {
             let buf_matrices = Buffer::builder().queue(ocl_queue.clone()).flags(flags).len(max_matrix_count).build()?;
             let buf_mesh_data = Buffer::builder().queue(ocl_queue.clone()).flags(flags).len(crate::gyro_source::splines::MAX_BUFFER_SIZE).build()?;
 
+            // The color LUT, as a plain float buffer rather than an image3d_t.
+            // OpenCL only guarantees 3D image support when the device reports it,
+            // and this kernel already reads every other input through __global
+            // pointers, so a buffer avoids the capability question entirely - the
+            // trilinear interpolation is done by hand either way, exactly as on
+            // wgpu, since no sampler is involved there either.
+            let lut_identity = crate::color::lut::LutTexture::identity_at_max(crate::color::lut::LutLayout::Volume3D);
+            let buf_lut = Buffer::builder().queue(ocl_queue.clone()).flags(flags).len(lut_identity.data.len()).build()?;
+            buf_lut.write(&lut_identity.data).enq()?;
+
             let mut builder = Kernel::builder();
             unsafe {
                 builder.program(&program).name("undistort_image").queue(ocl_queue.clone())
@@ -304,7 +336,8 @@ impl OclWrapper {
                     .arg(&buf_params)
                     .arg(&buf_matrices)
                     .arg(&buf_drawing)
-                    .arg(&buf_mesh_data);
+                    .arg(&buf_mesh_data)
+                    .arg(&buf_lut);
             }
 
             let kernel = builder.build()?;
@@ -323,10 +356,35 @@ impl OclWrapper {
                 buf_drawing,
                 buf_matrices,
                 buf_mesh_data,
+                buf_lut,
             })
         } else {
             Err(ocl::BufferCmdError::AlreadyMapped.into())
         }
+    }
+
+    /// Uploads a color LUT, replacing whatever the buffer held.
+    ///
+    /// Mirrors `WgpuWrapper::set_lut`: the payload is resampled to the fixed
+    /// allocation size so the buffer never changes length, and `None` restores
+    /// the identity table, which is what "no LUT loaded" means to the kernel.
+    pub fn set_lut(&mut self, lut: Option<&crate::color::lut::Lut>) -> ocl::Result<bool> {
+        use crate::color::lut::{ LutLayout, LutTexture };
+
+        let payload = match lut {
+            Some(l) => match LutTexture::resampled_to_max(l, LutLayout::Volume3D) {
+                Some(p) => p,
+                None => { log::error!("Only 3D LUTs can go to the GPU, got a 1D table"); return Ok(false); }
+            },
+            None => LutTexture::identity_at_max(LutLayout::Volume3D)
+        };
+
+        if self.buf_lut.len() != payload.data.len() {
+            log::error!("Buffer size mismatch buf_lut! {} vs {}", self.buf_lut.len(), payload.data.len());
+            return Ok(false);
+        }
+        self.buf_lut.write(&payload.data).enq()?;
+        Ok(true)
     }
 
     pub fn undistort_image(&self, buffers: &mut Buffers, itm: &crate::stabilization::FrameTransform, drawing_buffer: &[u8]) -> ocl::Result<()> {
@@ -464,5 +522,73 @@ pub fn is_buffer_supported(buffers: &Buffers) -> bool {
         BufferSource::CUDABuffer{ .. } => false,
         #[cfg(any(target_os = "macos", target_os = "ios"))]
         BufferSource::Metal { .. } | BufferSource::MetalBuffer { .. } => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every pixel layout the planar paths actually produce, as
+    /// `(label, ocl_names, pix_element_count)`.
+    ///
+    /// The 1- and 2-channel entries are the ones that matter: a colour helper
+    /// that dereferences `.z` compiles cleanly for `float4` and fails only here.
+    const LAYOUTS: [(&str, (&str, &str, &str, &str), i32); 4] = [
+        ("Luma8",  ("uchar",  "convert_uchar_sat",   "float",  "convert_float"),  1),
+        ("Luma16", ("ushort", "convert_ushort_sat",  "float",  "convert_float"),  1),
+        ("UV8",    ("uchar2", "convert_uchar2_sat",  "float2", "convert_float2"), 2),
+        ("RGBA8",  ("uchar4", "convert_uchar4_sat",  "float4", "convert_float4"), 4),
+    ];
+
+    fn params_for(pix_element_count: i32) -> KernelParams {
+        KernelParams {
+            width: 1920, height: 1080, stride: 1920 * 4,
+            output_width: 1920, output_height: 1080, output_stride: 1920 * 4,
+            pix_element_count,
+            bytes_per_pixel: 4,
+            interpolation: 2,
+            ..Default::default()
+        }
+    }
+
+    /// Compiles the expanded kernel on a real device, once per pixel layout.
+    ///
+    /// Skipped when no OpenCL device is present (CI containers, machines with no
+    /// ICD), because there is nothing to compile against - a missing device is
+    /// not a failing kernel.
+    #[test]
+    fn kernel_compiles_for_every_pixel_layout() {
+        let Ok(platform_list) = std::panic::catch_unwind(ocl::Platform::list) else {
+            eprintln!("skipping: no OpenCL platform list");
+            return;
+        };
+        let Some((platform, device)) = platform_list.iter().find_map(|p| {
+            ocl::Device::list_all(p).ok()?.into_iter().next().map(|d| (*p, d))
+        }) else {
+            eprintln!("skipping: no OpenCL device available");
+            return;
+        };
+
+        let context = Context::builder().platform(platform).devices(device).build()
+            .expect("failed to create an OpenCL context");
+
+        for (label, ocl_names, pix_element_count) in LAYOUTS {
+            let src = OclWrapper::build_kernel_source(
+                &params_for(pix_element_count),
+                ocl_names,
+                &DistortionModel::default(),
+                None,
+            );
+
+            let result = ocl::Program::builder()
+                .src(&src)
+                .devices(device)
+                .build(&context);
+
+            if let Err(e) = result {
+                panic!("kernel failed to compile for {label} (PIX_ELEMENT_COUNT={pix_element_count}):\n{e}");
+            }
+        }
     }
 }
