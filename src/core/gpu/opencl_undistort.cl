@@ -48,9 +48,13 @@ typedef struct {
     float light_refraction_coefficient; // 4
     int plane_index;                 // 8
     int output_projection;           // 12
-    float reserved2;                 // 16
+    float lut_amount;                // 16 - color LUT strength, 0..1
     float4 ewa_coeffs_p;             // 16
     float4 ewa_coeffs_q;             // 16
+    float4 color_adjust1;            // 16 - exposure, luminance, contrast, highlights
+    float4 color_adjust2;            // 16 - shadows, whites, blacks, temperature
+    float4 color_adjust3;            // 16 - tint, saturation, vibrance, vignette
+    float4 color_adjust4;            // 16 - sharpness, unused x3
 } KernelParams;
 
 #if INTERPOLATION == 2 // Bilinear
@@ -727,7 +731,196 @@ float2 undistort_coord(float2 out_pos, __global KernelParams *params, __global c
 // Adapted from OpenCV: initUndistortRectifyMap + remap
 // https://github.com/opencv/opencv/blob/2b60166e5c65f1caccac11964ad760d847c536e4/modules/calib3d/src/fisheye.cpp#L465-L567
 // https://github.com/opencv/opencv/blob/2b60166e5c65f1caccac11964ad760d847c536e4/modules/imgproc/src/opencl/remap.cl#L390-L498
-__kernel void undistort_image(__global const uchar *srcptr, __global uchar *dstptr, __global const void *params_buf, __global const float *matrices, __global const uchar *drawing, __global const float *mesh_data) {
+// Unsharp mask on the stabilized frame, matching apply_sharpness in
+// wgpu_undistort.wgsl and undistort.frag - same taps, same 1.5 cap, so the
+// three backends agree. Like there, the neighbourhood is taken in source space
+// through sample_input_at and warped along with the centre pixel.
+//
+// Guarded the same way as the color stages: on a planar pass the .z access is
+// a compile error, not just a wrong result.
+DATA_TYPEF apply_sharpness(DATA_TYPEF pixel, float2 uv, float4 jac, __global const uchar *srcptr, __global KernelParams *params, __global const uchar *drawing, DATA_TYPEF bg) {
+#if PIX_ELEMENT_COUNT >= 3
+    float amount = params->color_adjust4.x;
+    if (amount <= 0.0f) { return pixel; }
+
+    // One source pixel in each direction.
+    DATA_TYPEF blur = (pixel * 4.0f
+                     + sample_input_at(uv + (float2)( 1.0f, 0.0f), jac, srcptr, params, drawing, bg)
+                     + sample_input_at(uv + (float2)(-1.0f, 0.0f), jac, srcptr, params, drawing, bg)
+                     + sample_input_at(uv + (float2)( 0.0f, 1.0f), jac, srcptr, params, drawing, bg)
+                     + sample_input_at(uv + (float2)( 0.0f,-1.0f), jac, srcptr, params, drawing, bg)) / 8.0f;
+    DATA_TYPEF high = pixel - blur;
+    DATA_TYPEF sharpened = pixel + high * (amount * 1.5f);
+
+    DATA_TYPEF outp = pixel;
+    outp.x = clamp(sharpened.x, 0.0f, params->max_pixel_value);
+    outp.y = clamp(sharpened.y, 0.0f, params->max_pixel_value);
+    outp.z = clamp(sharpened.z, 0.0f, params->max_pixel_value);
+    return outp;
+#else
+    return pixel;
+#endif
+}
+
+// Applies the color LUT with trilinear interpolation, done by hand.
+//
+// The table arrives as a plain float buffer, not an image3d_t: 3D image support
+// is optional in OpenCL, and every other input to this kernel is already a
+// __global pointer. Interpolation would have to be explicit regardless - the
+// wgpu path has no sampler either - so nothing is lost by indexing arithmetic.
+//
+// Layout is RGBA, red varying fastest, matching Lut::to_rgba_f32 and the volume
+// layout in core/color/lut/gpu.rs.
+// NOTE: takes and returns DATA_TYPEF, the pipeline's own pixel type. It is
+// float4 only for packed RGB formats - on planar YUV this kernel runs once per
+// plane and DATA_TYPEF is float or float2, so hardcoding float4 fails to
+// compile with "assigning to ushort from ushort4".
+DATA_TYPEF apply_color_lut(DATA_TYPEF pixel, __global const float *lut, int n, __global KernelParams *params) {
+// Only packed RGB has three channels in one call; on a planar pass there is
+// nothing a 3D LUT can do, so leave the plane untouched. This has to be a
+// preprocessor branch, not a runtime one: the compiler type-checks the whole
+// body regardless of which path runs, and `pixel.z` on a float/float2 plane is
+// a hard error ("member reference base type 'float' is not a structure").
+#if PIX_ELEMENT_COUNT >= 3
+    // With no LUT loaded the amount is 0, and this skips eight fetches per pixel.
+    if (params->lut_amount <= 0.0f) { return pixel; }
+
+    float last = (float)(n - 1);
+
+    float3 rgb = clamp((float3)(pixel.x, pixel.y, pixel.z) / params->max_pixel_value, 0.0f, 1.0f);
+    float3 pos = rgb * last;
+    int3 i0 = clamp(convert_int3(floor(pos)),               (int3)(0), (int3)(n - 1));
+    int3 i1 = clamp(convert_int3(floor(pos)) + (int3)(1),   (int3)(0), (int3)(n - 1));
+    float3 f = pos - floor(pos);
+
+#   define LUT_AT(rr, gg, bb) vload4(0, &lut[((rr) + (gg) * n + (bb) * n * n) * 4]).xyz
+
+    float3 c000 = LUT_AT(i0.x, i0.y, i0.z);
+    float3 c100 = LUT_AT(i1.x, i0.y, i0.z);
+    float3 c010 = LUT_AT(i0.x, i1.y, i0.z);
+    float3 c110 = LUT_AT(i1.x, i1.y, i0.z);
+    float3 c001 = LUT_AT(i0.x, i0.y, i1.z);
+    float3 c101 = LUT_AT(i1.x, i0.y, i1.z);
+    float3 c011 = LUT_AT(i0.x, i1.y, i1.z);
+    float3 c111 = LUT_AT(i1.x, i1.y, i1.z);
+
+#   undef LUT_AT
+
+    float3 c00 = mix(c000, c100, f.x);
+    float3 c10 = mix(c010, c110, f.x);
+    float3 c01 = mix(c001, c101, f.x);
+    float3 c11 = mix(c011, c111, f.x);
+
+    float3 c0 = mix(c00, c10, f.y);
+    float3 c1 = mix(c01, c11, f.y);
+    // Blended against the original, so the slider fades the grade in.
+    float3 graded = mix(c0, c1, f.z) * params->max_pixel_value;
+    float3 outv = mix((float3)(pixel.x, pixel.y, pixel.z), graded, params->lut_amount);
+
+    DATA_TYPEF outp = pixel;
+    outp.x = outv.x; outp.y = outv.y; outp.z = outv.z;
+    return outp;
+#else
+    return pixel;
+#endif
+}
+
+// Per-pixel color adjustments, applied after the LUT.
+//
+// Mirrors core/color/adjustments.rs exactly - same order, same constants. That
+// module is the reference and carries the tests.
+#define LUMA_W          ((float3)(0.2126f, 0.7152f, 0.0722f))
+#define EXPOSURE_STOPS  2.0f
+#define LUMINANCE_GAIN  0.5f
+#define CONTRAST_PIVOT  0.5f
+#define TONAL_STRENGTH  0.5f
+#define WB_STRENGTH     0.2f
+#define VIGNETTE_INNER  0.3f
+#define VIGNETTE_OUTER  1.0f
+
+float eotf_r709(float v) { return v < 0.081f ? v / 4.5f : pow((v + 0.099f) / 1.099f, 1.0f / 0.45f); }
+float oetf_r709(float v) { return v < 0.018f ? v * 4.5f : 1.099f * pow(v, 0.45f) - 0.099f; }
+float3 eotf3(float3 c) { return (float3)(eotf_r709(c.x), eotf_r709(c.y), eotf_r709(c.z)); }
+float3 oetf3(float3 c) { return (float3)(oetf_r709(c.x), oetf_r709(c.y), oetf_r709(c.z)); }
+
+float3 tonal_band(float3 c, float amount, float e0, float e1, bool invert) {
+    if (amount == 0.0f) return c;
+    float l = dot(c, LUMA_W);
+    float mask = smoothstep(e0, e1, l);
+    if (invert) mask = 1.0f - mask;
+    float w = fabs(amount) * mask * TONAL_STRENGTH;
+    float dest = amount > 0.0f ? 1.0f : 0.0f;
+    return c + ((float3)(dest, dest, dest) - c) * w;
+}
+
+DATA_TYPEF apply_color_adjustments(DATA_TYPEF pixel, float2 out_pos, __global KernelParams *params) {
+// Same reason as in apply_color_lut: the .z accesses below have to be compiled
+// out on planar passes, not merely skipped at runtime.
+#if PIX_ELEMENT_COUNT >= 3
+    float exposure    = params->color_adjust1.x;
+    float luminance   = params->color_adjust1.y;
+    float contrast    = params->color_adjust1.z;
+    float highlights  = params->color_adjust1.w;
+    float shadows     = params->color_adjust2.x;
+    float whites      = params->color_adjust2.y;
+    float blacks      = params->color_adjust2.z;
+    float temperature = params->color_adjust2.w;
+    float tint        = params->color_adjust3.x;
+    float saturation  = params->color_adjust3.y;
+    float vibrance    = params->color_adjust3.z;
+    float vignette    = params->color_adjust3.w;
+
+    if (exposure == 0.0f && luminance == 0.0f && contrast == 0.0f && highlights == 0.0f &&
+        shadows == 0.0f && whites == 0.0f && blacks == 0.0f && temperature == 0.0f &&
+        tint == 0.0f && saturation == 0.0f && vibrance == 0.0f && vignette == 0.0f) {
+        return pixel;
+    }
+
+    float3 c = (float3)(pixel.x, pixel.y, pixel.z) / params->max_pixel_value;
+
+    if (exposure != 0.0f) {
+        c = oetf3(eotf3(fmax(c, (float3)(0.0f, 0.0f, 0.0f))) * exp2(exposure * EXPOSURE_STOPS));
+    }
+    if (luminance != 0.0f) { c *= 1.0f + luminance * LUMINANCE_GAIN; }
+    if (contrast != 0.0f) { c = (c - CONTRAST_PIVOT) * (1.0f + contrast) + CONTRAST_PIVOT; }
+
+    c = tonal_band(c, blacks,     0.0f,  0.25f, true);
+    c = tonal_band(c, shadows,    0.0f,  0.5f,  true);
+    c = tonal_band(c, highlights, 0.5f,  1.0f,  false);
+    c = tonal_band(c, whites,     0.75f, 1.0f,  false);
+
+    if (temperature != 0.0f || tint != 0.0f) {
+        float t = temperature * WB_STRENGTH;
+        float g = tint * WB_STRENGTH;
+        c = (float3)(c.x + t + g * 0.5f, c.y - g, c.z - t + g * 0.5f);
+    }
+    if (saturation != 0.0f) {
+        float l = dot(c, LUMA_W);
+        c = (float3)(l, l, l) + (c - (float3)(l, l, l)) * (1.0f + saturation);
+    }
+    if (vibrance != 0.0f) {
+        float l = dot(c, LUMA_W);
+        float sat = clamp(fmax(c.x, fmax(c.y, c.z)) - fmin(c.x, fmin(c.y, c.z)), 0.0f, 1.0f);
+        c = (float3)(l, l, l) + (c - (float3)(l, l, l)) * (1.0f + vibrance * (1.0f - sat));
+    }
+    if (vignette != 0.0f) {
+        float2 size = (float2)((float)params->output_width, (float)params->output_height);
+        float aspect = size.x / fmax(size.y, 1.0f);
+        float2 d = (float2)((out_pos.x / fmax(size.x, 1.0f) - 0.5f) * aspect, out_pos.y / fmax(size.y, 1.0f) - 0.5f);
+        float v = smoothstep(VIGNETTE_OUTER, VIGNETTE_INNER, length(d) / length((float2)(0.5f * aspect, 0.5f)));
+        c *= 1.0f - vignette * (1.0f - v);
+    }
+
+    c = clamp(c, 0.0f, 1.0f) * params->max_pixel_value;
+    DATA_TYPEF outp = pixel;
+    outp.x = c.x; outp.y = c.y; outp.z = c.z;
+    return outp;
+#else
+    return pixel;
+#endif
+}
+
+__kernel void undistort_image(__global const uchar *srcptr, __global uchar *dstptr, __global const void *params_buf, __global const float *matrices, __global const uchar *drawing, __global const float *mesh_data, __global const float *lut) {
     int buf_x = get_global_id(0);
     int buf_y = get_global_id(1);
 
@@ -796,15 +989,21 @@ __kernel void undistort_image(__global const uchar *srcptr, __global uchar *dstp
 
                 DATA_TYPEF c1 = sample_input_at(uv,  jac, srcptr, params, drawing, bg);
                 DATA_TYPEF c2 = sample_input_at(pt2, jac, srcptr, params, drawing, bg); // FIXME: jac should be adjusted for pt2
-                final_pix = DATA_CONVERT(c1 * alpha + c2 * (1.0f - alpha));
+                // The LUT runs on the float value, before quantization and before
+                // the overlays, so drawing and the safe area keep their own
+                // colors. This branch returns early - forgetting it would leave
+                // part of the frame ungraded.
+                final_pix = DATA_CONVERT(apply_color_adjustments(apply_color_lut(apply_sharpness(c1 * alpha + c2 * (1.0f - alpha), uv, jac, srcptr, params, drawing, bg), lut, LUT_SIZE, params), (float2)(x, y), params));
                 draw_pixel(&final_pix, x, y, false, max(params->width, params->output_width), params, drawing);
                 draw_safe_area(&final_pix, x, y, params);
                 *out_pix = final_pix;
                 return;
             }
 
-            final_pix = DATA_CONVERT(sample_input_at(uv, jac, srcptr, params, drawing, bg));
+            final_pix = DATA_CONVERT(apply_color_adjustments(apply_color_lut(apply_sharpness(sample_input_at(uv, jac, srcptr, params, drawing, bg), uv, jac, srcptr, params, drawing, bg), lut, LUT_SIZE, params), (float2)(x, y), params));
         } else {
+            // Background, not image data - the user picked this color, so it is
+            // deliberately left ungraded, like the two early returns above.
             final_pix = DATA_CONVERT(bg);
         }
         draw_pixel(&final_pix, x, y, false, max(params->width, params->output_width), params, drawing);

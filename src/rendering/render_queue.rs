@@ -90,6 +90,9 @@ pub struct RenderOptions {
     pub export_trims_separately: bool,
     pub audio_codec: String,
     pub interpolation: String,
+    /// Converts graded frames to RGB with the render's interpolation filter
+    /// instead of the fast one. Off by default: much slower, rarely visible.
+    pub precise_color_conversion: bool,
 }
 impl RenderOptions {
     pub fn settings_string(&self, fps: f64) -> String {
@@ -142,6 +145,7 @@ impl RenderOptions {
             if let Some(v) = obj.get("export_trims_separately").and_then(|x| x.as_bool()) { self.export_trims_separately = v; }
             if let Some(v) = obj.get("audio_codec")            .and_then(|x| x.as_str())  { self.audio_codec = v.to_string(); }
             if let Some(v) = obj.get("interpolation")          .and_then(|x| x.as_str())  { self.interpolation = v.to_string(); }
+            if let Some(v) = obj.get("precise_color_conversion").and_then(|x| x.as_bool()) { self.precise_color_conversion = v; }
 
             if let Some(v) = obj.get("metadata").and_then(|x| x.as_object())  {
                 if let Some(s) = v.get("comment").and_then(|x| x.as_str()) { self.metadata.comment = s.to_string(); }
@@ -1290,8 +1294,8 @@ impl RenderQueue {
                     let stab = Arc::new(stab);
 
                     let stab2 = stab.clone();
-                    let loaded = util::qt_queued_callback_mut(QPointer::from(self as &Self), move |this, render_options: RenderOptions| {
-                        this.add_internal(job_id, stab2.clone(), render_options, additional_data2.clone(), QString::default());
+                    let loaded = util::qt_queued_callback_mut(QPointer::from(self as &Self), move |this, (render_options, additional_data): (RenderOptions, String)| {
+                        this.add_internal(job_id, stab2.clone(), render_options, additional_data, QString::default());
                     });
                     let thumb_fetched = util::qt_queued_callback_mut(QPointer::from(self as &Self), move |this, thumb: QString| {
                         update_model!(this, job_id, itm { itm.thumbnail_url = thumb; });
@@ -1353,10 +1357,11 @@ impl RenderQueue {
 
                             match result {
                                 Ok(obj) => {
+                                    Self::apply_project_color(&stab, &obj);
                                     if let Some(out) = obj.get("output") {
                                         if let Ok(mut render_options2) = serde_json::from_value(out.clone()) as serde_json::Result<RenderOptions> {
                                             render_options2.update_from_json(out);
-                                            loaded(render_options2);
+                                            loaded((render_options2, Self::with_project_clip_settings(&additional_data2, &obj)));
                                         }
                                     }
                                     if let Some(out) = obj.get("videofile").and_then(|x| x.as_str()) {
@@ -1468,7 +1473,7 @@ impl RenderQueue {
 
                                 // println!("{}", stab.export_gyroflow_data(true, serde_json::to_string(&render_options).unwrap_or_default()));
 
-                                loaded(render_options);
+                                loaded((render_options, additional_data2.clone()));
 
                                 Self::update_sync_settings(&stab, &sync_options);
 
@@ -1901,6 +1906,38 @@ impl RenderQueue {
         timestamps.sort_by(|a, b| a.total_cmp(b));
 
         timestamps
+    }
+
+    /// `color_lut` belongs to the clip, not to the UI state passed in with it: a restored job
+    /// must keep its own, or editing it shows and saves another clip's settings.
+    fn with_project_clip_settings(additional_data: &str, project: &serde_json::Value) -> String {
+        let Ok(serde_json::Value::Object(mut obj)) = serde_json::from_str(additional_data) else {
+            return additional_data.to_owned();
+        };
+        for key in ["color_lut"] {
+            obj.insert(key.into(), project.get(key).cloned().unwrap_or_else(|| serde_json::json!({})));
+        }
+        serde_json::to_string(&obj).unwrap_or_default()
+    }
+
+    /// The grading only reaches the stabilizer through the color panel, which never sees a job
+    /// restored in the background - without this the queue renders it ungraded.
+    fn apply_project_color(stab: &StabilizationManager, project: &serde_json::Value) {
+        let Some(color) = project.get("color_lut") else { return; };
+        if let Some(url) = color.get("url").and_then(|x| x.as_str()).filter(|x| !x.is_empty()) {
+            match stab.load_color_lut(url) {
+                // Saved as 0..1; projects from before the slider existed meant full strength.
+                Ok(()) => stab.set_color_lut_amount(color.get("amount").and_then(|x| x.as_f64()).unwrap_or(1.0) as f32),
+                Err(e) => ::log::warn!("Failed to load the LUT {url}: {e:?}"),
+            }
+        }
+        if let Some(adjustments) = color.get("adjustments").and_then(|x| x.as_object()) {
+            for (name, v) in adjustments {
+                if let Some(v) = v.as_f64() {
+                    stab.set_color_adjustment(name, v as f32);
+                }
+            }
+        }
     }
 
     fn update_sync_settings(stab: &StabilizationManager, sync_options: &serde_json::Value) {

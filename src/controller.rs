@@ -93,6 +93,39 @@ pub struct Controller {
     set_background_color: qt_method!(fn(&self, color: QString, player: QJSValue)),
     set_integration_method: qt_method!(fn(&self, index: usize)),
 
+    // ---- Color LUT ----
+    /// Loads a `.cube` file. Emits `color_lut_changed` with the outcome.
+    load_color_lut: qt_method!(fn(&mut self, url: QUrl)),
+    /// Loads from a URL already in text form, as stored in a project file.
+    load_color_lut_url: qt_method!(fn(&mut self, url: QString)),
+    /// Removes the loaded LUT.
+    clear_color_lut: qt_method!(fn(&mut self)),
+    /// Emitted after a load or clear. `error` is empty on success, and holds a
+    /// message meant to be shown when the file could not be used.
+    color_lut_changed: qt_signal!(ok: bool, error: QString),
+    /// URL of the loaded LUT, for the project file. Empty when none is loaded.
+    get_color_lut_url: qt_method!(fn(&self) -> QString),
+    /// Describes the loaded LUT as JSON, or empty when none is loaded.
+    ///
+    /// JSON rather than a formatted sentence: the wording belongs in QML where
+    /// `qsTr` can reach it.
+    get_color_lut_info: qt_method!(fn(&self) -> QString),
+    /// Readable path of the loaded LUT, for display.
+    get_color_lut_path: qt_method!(fn(&self) -> QString),
+    /// LUT strength, 0..1. Writing only updates a uniform - no re-upload.
+    set_color_lut_amount: qt_method!(fn(&mut self, amount: f64)),
+    get_color_lut_amount: qt_method!(fn(&self) -> f64),
+    /// Lists the `.cube` files in a folder, as a JSON array of `{name, url}`.
+    list_color_luts: qt_method!(fn(&self, folder_url: QString) -> QString),
+
+    // ---- Color adjustments, applied after the LUT ----
+    /// Sets one adjustment by name: exposure, contrast, saturation, temperature,
+    /// tint, highlights, shadows or vignette.
+    set_color_adjustment: qt_method!(fn(&mut self, name: QString, value: f64)),
+    get_color_adjustment: qt_method!(fn(&self, name: QString) -> f64),
+    /// Resets every adjustment to neutral.
+    reset_color_adjustments: qt_method!(fn(&mut self)),
+
     set_offset: qt_method!(fn(&self, timestamp_us: i64, offset_ms: f64)),
     remove_offset: qt_method!(fn(&self, timestamp_us: i64)),
     clear_offsets: qt_method!(fn(&self)),
@@ -1426,6 +1459,103 @@ impl Controller {
             self.stabilizer.set_background_color(Vector4::new(bg.0 as f32, bg.1 as f32, bg.2 as f32, bg.3 as f32));
             self.request_recompute();
         }
+    }
+
+    // ---- Color LUT ----
+
+    fn load_color_lut(&mut self, url: QUrl) {
+        let url = util::qurl_to_encoded(url);
+        self.apply_color_lut(&url);
+    }
+
+    fn load_color_lut_url(&mut self, url: QString) {
+        self.apply_color_lut(&url.to_string());
+    }
+
+    /// Shared by both entry points: parse, report, and repaint.
+    fn apply_color_lut(&mut self, url: &str) {
+        match self.stabilizer.load_color_lut(url) {
+            Ok(()) => {
+                // The LUT is a per-pixel change, so the stabilization data stays
+                // valid - only the frame has to be drawn again.
+                self.request_recompute();
+                self.color_lut_changed(true, QString::default());
+            }
+            Err(e) => {
+                ::log::error!("Failed to load the color LUT {url}: {e}");
+                self.color_lut_changed(false, QString::from(e.to_string()));
+            }
+        }
+    }
+
+    fn clear_color_lut(&mut self) {
+        self.stabilizer.clear_color_lut();
+        self.request_recompute();
+        self.color_lut_changed(true, QString::default());
+    }
+
+    fn get_color_lut_url(&self) -> QString {
+        QString::from(self.stabilizer.color_lut_path())
+    }
+
+    fn get_color_lut_path(&self) -> QString {
+        let path = self.stabilizer.color_lut_path();
+        if path.is_empty() { return QString::default(); }
+        QString::from(gyroflow_core::filesystem::display_url(&path))
+    }
+
+    fn set_color_lut_amount(&mut self, amount: f64) {
+        self.stabilizer.set_color_lut_amount(amount as f32);
+        self.request_recompute();
+    }
+
+    fn get_color_lut_amount(&self) -> f64 {
+        self.stabilizer.color_lut_amount() as f64
+    }
+
+    fn set_color_adjustment(&mut self, name: QString, value: f64) {
+        self.stabilizer.set_color_adjustment(&name.to_string(), value as f32);
+        self.request_recompute();
+    }
+
+    fn get_color_adjustment(&self, name: QString) -> f64 {
+        self.stabilizer.color_adjustment(&name.to_string()) as f64
+    }
+
+    fn reset_color_adjustments(&mut self) {
+        self.stabilizer.reset_color_adjustments();
+        self.request_recompute();
+    }
+
+    fn list_color_luts(&self, folder_url: QString) -> QString {
+        let folder = folder_url.to_string();
+        if folder.is_empty() { return QString::default(); }
+
+        // list_folder returns directories too, so the extension filter is what
+        // keeps them out - and it is case-insensitive because .CUBE is common.
+        let mut entries: Vec<_> = gyroflow_core::filesystem::list_folder(&folder)
+            .into_iter()
+            .filter(|(name, _)| name.to_ascii_lowercase().ends_with(".cube"))
+            .map(|(name, url)| serde_json::json!({ "name": name, "url": url }))
+            .collect();
+
+        // Sorted by name: read_dir order is whatever the filesystem returns, and
+        // a list that reshuffles between launches is hard to use.
+        entries.sort_by(|a, b| {
+            let (x, y) = (a["name"].as_str().unwrap_or(""), b["name"].as_str().unwrap_or(""));
+            x.to_ascii_lowercase().cmp(&y.to_ascii_lowercase())
+        });
+
+        QString::from(serde_json::Value::Array(entries).to_string())
+    }
+
+    fn get_color_lut_info(&self) -> QString {
+        let size = self.stabilizer.color_lut_size();
+        if size == 0 { return QString::default(); }
+        QString::from(serde_json::json!({
+            "size":  size,
+            "title": self.stabilizer.color_lut_title(),
+        }).to_string())
     }
 
     fn set_smoothing_method(&mut self, index: usize) -> QJsonArray {
