@@ -31,6 +31,9 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Libraries Qt's tools load
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libfontconfig1
+
       - name: Install Qt 6.4.3 (qsb and lrelease)
         run: |
           pip install aqtinstall
