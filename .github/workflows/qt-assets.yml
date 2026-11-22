@@ -1,0 +1,86 @@
+name: Qt shaders and translations
+
+# The Qt RHI preview shaders (src/qt_gpu/compiled/*.qsb) and the compiled
+# Portuguese translation (resources/translations/pt_BR.qm) are binary files kept
+# in the repository. This builds them with Qt 6.4.3, whose qsb writes the .qsb
+# version every platform's Qt can read, and uploads them as the "qt-assets"
+# artifact and commits them to the branch when they changed, so a shader or .ts
+# change needs no local Qt install. (Authorized by Nicolas on 2026-11-16 for the
+# PR branch.) The commit is made with GITHUB_TOKEN, so it doesn't start other
+# workflows by itself.
+
+on:
+  push:
+    paths:
+      - 'src/qt_gpu/undistort.frag'
+      - 'src/qt_gpu/texture.vert'
+      - 'src/qt_gpu/compiled/compile_shaders.sh'
+      - 'src/core/stabilization/distortion_models/*.glsl'
+      - 'resources/translations/pt_BR.ts'
+      - '.github/workflows/qt-assets.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Libraries Qt's tools load
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libfontconfig1
+
+      - name: Install Qt 6.4.3 (qsb and lrelease)
+        run: |
+          pip install aqtinstall
+          MODULES=$(aqt list-qt linux desktop --modules 6.4.3 gcc_64)
+          echo "Available modules: $MODULES"
+          EXTRA=""
+          if echo "$MODULES" | tr ' ' '\n' | grep -qx qtshadertools; then EXTRA="-m qtshadertools"; fi
+          aqt install-qt linux desktop 6.4.3 gcc_64 -O "$RUNNER_TEMP/qt" $EXTRA
+          ls "$RUNNER_TEMP/qt/6.4.3/gcc_64/bin"
+          echo "QT_BIN=$RUNNER_TEMP/qt/6.4.3/gcc_64/bin" >> "$GITHUB_ENV"
+
+      - name: Compile the Qt RHI shaders
+        working-directory: src/qt_gpu/compiled
+        run: |
+          export LD_LIBRARY_PATH="$QT_BIN/../lib"
+          QSB="$QT_BIN/qsb" bash -e compile_shaders.sh
+
+      - name: Compile the Portuguese translation
+        run: |
+          export LD_LIBRARY_PATH="$QT_BIN/../lib"
+          "$QT_BIN/lrelease" resources/translations/pt_BR.ts -qm resources/translations/pt_BR.qm
+
+      - name: Show what differs from the repository
+        run: git status --short
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qt-assets
+          path: |
+            src/qt_gpu/compiled/*.qsb
+            resources/translations/pt_BR.qm
+
+      - name: Commit the rebuilt files to this branch
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        run: |
+          git add src/qt_gpu/compiled/*.qsb resources/translations/pt_BR.qm
+          if git diff --cached --quiet; then echo "Already up to date"; exit 0; fi
+          git diff --cached --stat
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Rebuild the Qt preview shaders and pt_BR.qm with Qt 6.4.3"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          # A push made with GITHUB_TOKEN starts no workflows, so the app build would
+          # otherwise keep the old shaders. Start it on the new commit by hand.
+          gh workflow run release.yml --ref "${GITHUB_REF_NAME}"
+        env:
+          GH_TOKEN: ${{ github.token }}

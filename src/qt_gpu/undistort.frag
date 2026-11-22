@@ -51,9 +51,13 @@ layout(std140, binding = 2) uniform KernelParams {
     float light_refraction_coefficient; // 4
     int plane_index;                // 8
     int output_projection;          // 12
-    float reserved2;                // 16
+    float lut_amount;               // 16 - color LUT strength, 0..1
     vec4 ewa_coefs_p;               // 16
     vec4 ewa_coefs_q;               // 16
+    vec4 color_adjust1;             // 16 - exposure, luminance, contrast, highlights
+    vec4 color_adjust2;             // 16 - shadows, whites, blacks, temperature
+    vec4 color_adjust3;             // 16 - tint, saturation, vibrance, vignette
+    vec4 color_adjust4;             // 16 - sharpness, unused x3
 } params;
 
 LENS_MODEL_FUNCTIONS;
@@ -61,6 +65,9 @@ LENS_MODEL_FUNCTIONS;
 layout(binding = 3) uniform sampler2D texParams;
 layout(binding = 4) uniform sampler2D texCanvas;
 layout(binding = 5) uniform sampler2D texMeshData;
+// The color LUT. Always bound - an identity table when none is loaded - because
+// the shader resource bindings are fixed when the pipeline is built.
+layout(binding = 6) uniform sampler3D texLut;
 
 const vec4 colors[11] = vec4[11](
     vec4(0.0,   0.0,   0.0,     0.0), // None
@@ -228,6 +235,134 @@ vec2 rotate_point(vec2 pos, float angle, vec2 origin, vec2 origin2) {
      return vec2(cos(angle) * (pos.x - origin.x) - sin(angle) * (pos.y - origin.y) + origin2.x,
                  sin(angle) * (pos.x - origin.x) + cos(angle) * (pos.y - origin.y) + origin2.y);
 }
+// Applies the color LUT.
+//
+// Unlike the wgpu and OpenCL paths, this one has a real linear sampler, so the
+// trilinear interpolation is done by the hardware. That needs the half-texel
+// correction: sampling at exactly 0 or 1 lands on a texel edge, not a texel
+// centre, which clips the ends of the table. The scale/offset below maps 0..1
+// onto the centres of the first and last texels.
+//
+// This path is RGBA8 in 0..1, so there is no max_pixel_value division here -
+// the other three backends work in 0..255 / 0..1023 / 0..65535 and must
+// normalize first.
+vec4 apply_color_lut(vec4 pixel) {
+    // With no LUT loaded the amount is 0, and this skips the fetch entirely.
+    if (params.lut_amount <= 0.0) { return pixel; }
+
+    float n = float(textureSize(texLut, 0).x);
+    vec3 uvw = clamp(pixel.rgb, 0.0, 1.0) * ((n - 1.0) / n) + (0.5 / n);
+    // Blended against the original, so the slider fades the grade in.
+    return vec4(mix(pixel.rgb, texture(texLut, uvw).rgb, params.lut_amount), pixel.a);
+}
+
+// Per-pixel color adjustments, applied after the LUT.
+//
+// Mirrors core/color/adjustments.rs exactly - same order, same constants. This
+// path is already 0..1, so unlike the other three there is no max_pixel_value
+// division here.
+const vec3 LUMA_W = vec3(0.2126, 0.7152, 0.0722);
+const float EXPOSURE_STOPS = 2.0;
+const float LUMINANCE_GAIN = 0.5;
+const float CONTRAST_PIVOT = 0.5;
+const float TONAL_STRENGTH = 0.5;
+const float WB_STRENGTH = 0.2;
+const float VIGNETTE_INNER = 0.3;
+const float VIGNETTE_OUTER = 1.0;
+
+float eotf_r709(float v) { return v < 0.081 ? v / 4.5 : pow((v + 0.099) / 1.099, 1.0 / 0.45); }
+float oetf_r709(float v) { return v < 0.018 ? v * 4.5 : 1.099 * pow(v, 0.45) - 0.099; }
+vec3 eotf3(vec3 c) { return vec3(eotf_r709(c.r), eotf_r709(c.g), eotf_r709(c.b)); }
+vec3 oetf3(vec3 c) { return vec3(oetf_r709(c.r), oetf_r709(c.g), oetf_r709(c.b)); }
+
+vec3 tonal_band(vec3 c, float amount, float e0, float e1, bool invert) {
+    if (amount == 0.0) return c;
+    float l = dot(c, LUMA_W);
+    float mask = smoothstep(e0, e1, l);
+    if (invert) mask = 1.0 - mask;
+    float w = abs(amount) * mask * TONAL_STRENGTH;
+    float dest = amount > 0.0 ? 1.0 : 0.0;
+    return c + (vec3(dest) - c) * w;
+}
+
+vec4 apply_color_adjustments(vec4 pixel, vec2 out_pos) {
+    float exposure    = params.color_adjust1.x;
+    float luminance   = params.color_adjust1.y;
+    float contrast    = params.color_adjust1.z;
+    float highlights  = params.color_adjust1.w;
+    float shadows     = params.color_adjust2.x;
+    float whites      = params.color_adjust2.y;
+    float blacks      = params.color_adjust2.z;
+    float temperature = params.color_adjust2.w;
+    float tint        = params.color_adjust3.x;
+    float saturation  = params.color_adjust3.y;
+    float vibrance    = params.color_adjust3.z;
+    float vignette    = params.color_adjust3.w;
+
+    if (exposure == 0.0 && luminance == 0.0 && contrast == 0.0 && highlights == 0.0 &&
+        shadows == 0.0 && whites == 0.0 && blacks == 0.0 && temperature == 0.0 &&
+        tint == 0.0 && saturation == 0.0 && vibrance == 0.0 && vignette == 0.0) {
+        return pixel;
+    }
+
+    vec3 c = pixel.rgb;
+
+    if (exposure != 0.0) { c = oetf3(eotf3(max(c, vec3(0.0))) * exp2(exposure * EXPOSURE_STOPS)); }
+    if (luminance != 0.0) { c *= 1.0 + luminance * LUMINANCE_GAIN; }
+    if (contrast != 0.0) { c = (c - CONTRAST_PIVOT) * (1.0 + contrast) + CONTRAST_PIVOT; }
+
+    c = tonal_band(c, blacks,     0.0,  0.25, true);
+    c = tonal_band(c, shadows,    0.0,  0.5,  true);
+    c = tonal_band(c, highlights, 0.5,  1.0,  false);
+    c = tonal_band(c, whites,     0.75, 1.0,  false);
+
+    if (temperature != 0.0 || tint != 0.0) {
+        float t = temperature * WB_STRENGTH;
+        float g = tint * WB_STRENGTH;
+        c = vec3(c.r + t + g * 0.5, c.g - g, c.b - t + g * 0.5);
+    }
+    if (saturation != 0.0) {
+        float l = dot(c, LUMA_W);
+        c = vec3(l) + (c - vec3(l)) * (1.0 + saturation);
+    }
+    if (vibrance != 0.0) {
+        float l = dot(c, LUMA_W);
+        float sat = clamp(max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b)), 0.0, 1.0);
+        c = vec3(l) + (c - vec3(l)) * (1.0 + vibrance * (1.0 - sat));
+    }
+    if (vignette != 0.0) {
+        vec2 size = vec2(float(params.output_width), float(params.output_height));
+        float aspect = size.x / max(size.y, 1.0);
+        vec2 d = vec2((out_pos.x / max(size.x, 1.0) - 0.5) * aspect, out_pos.y / max(size.y, 1.0) - 0.5);
+        float v = smoothstep(VIGNETTE_OUTER, VIGNETTE_INNER, length(d) / length(vec2(0.5 * aspect, 0.5)));
+        c *= 1.0 - vignette * (1.0 - v);
+    }
+
+    return vec4(clamp(c, 0.0, 1.0), pixel.a);
+}
+
+// Unsharp mask on the source neighbourhood.
+//
+// Same reasoning as the wgpu copy: the spec asks for sharpening on the
+// stabilized frame, but this shader can only reach the source, so the
+// neighbourhood is taken there and warped along with the centre pixel.
+vec4 apply_sharpness(vec4 pixel, vec2 uv, vec2 frame_size) {
+    float amount = params.color_adjust4.x;
+    if (amount <= 0.0) return pixel;
+
+    // One source pixel in each direction.
+    vec2 tx = 1.0 / max(frame_size, vec2(1.0));
+    vec2 c = vec2(uv.x / max(frame_size.x, 1.0), uv.y / max(frame_size.y, 1.0));
+    vec4 blur = (pixel * 4.0
+               + texture(texIn, c + vec2( tx.x, 0.0))
+               + texture(texIn, c + vec2(-tx.x, 0.0))
+               + texture(texIn, c + vec2(0.0,  tx.y))
+               + texture(texIn, c + vec2(0.0, -tx.y))) / 8.0;
+    // K caps the strength so 100 % is strong but not haloed.
+    vec4 sharpened = pixel + (pixel - blur) * (amount * 1.5);
+    return vec4(clamp(sharpened.rgb, 0.0, 1.0), pixel.a);
+}
+
 void main() {
     vec2 texPos = v_texcoord.xy * vec2(params.output_width, params.output_height) + params.translation2d;
     vec2 outPos = v_texcoord.xy * vec2(params.output_width, params.output_height);
@@ -405,6 +540,11 @@ void main() {
             fragColor.a = 1.0;
             if (!((pt2.x >= 0 && pt2.x < params.width) && (pt2.y >= 0 && pt2.y < params.height))) {
                 fragColor = params.background;
+            } else {
+                // Only when this is real image data - the background is the
+                // user's chosen color and stays ungraded. Before the overlays,
+                // and this branch returns early.
+                fragColor = apply_color_adjustments(apply_color_lut(apply_sharpness(fragColor, uv, frame_size)), outPos);
             }
             draw_pixel(fragColor, uv.x, uv.y, true);
             draw_pixel(fragColor, outPos.x, outPos.y, false);
@@ -413,7 +553,7 @@ void main() {
         }
 
         if ((uv.x >= 0 && uv.x < frame_size.x) && (uv.y >= 0 && uv.y < frame_size.y)) {
-            fragColor = texture(texIn, vec2(uv.x / frame_size.x, uv.y / frame_size.y));
+            fragColor = apply_color_adjustments(apply_color_lut(apply_sharpness(texture(texIn, vec2(uv.x / frame_size.x, uv.y / frame_size.y)), uv, frame_size)), outPos);
             draw_pixel(fragColor, uv.x, uv.y, true);
             draw_pixel(fragColor, outPos.x, outPos.y, false);
             draw_safe_area(fragColor, outPos.x, outPos.y);

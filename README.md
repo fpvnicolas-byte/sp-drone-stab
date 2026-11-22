@@ -32,6 +32,10 @@ like jelly.
   gyro, and uses the gyro everywhere else. The timeline marks them in amber, and the app explains in plain words what
   it did. This is the same image-only stabilization as Gyroflow's "Ignore motion data from the file", but only where
   it's needed, so the rest of the clip keeps the gyro's precision and doesn't need the slower image analysis.
+- **Color with a LUT, straight in the export.** Filmed in D-Log M or another flat profile? Load its `.cube` LUT in the
+  **Color** panel and the exported file already comes out with normal colors, no second pass in an editor. Intensity
+  slider, a folder of your LUTs one click away, and 13 adjustments (exposure, contrast, highlights, shadows, white
+  balance, saturation, sharpness, vignette and more). Ported from FPV Flow.
 - **Everything Gyroflow 1.7.0 does**: lens profiles, rolling shutter correction, optical correction and sync, smoothing
   algorithms, GPU rendering, keyframes and the render queue.
 
@@ -61,7 +65,8 @@ SP Drone Stab is built on the work of these open-source projects, and wouldn't e
   See the [Gyroflow README](https://github.com/gyroflow/gyroflow#readme) for its full feature list, supported cameras,
   authors and acknowledgements.
 - **[FPV Flow](https://github.com/rodrigosclosa/fpvflow)**, by Rodrigo Sclosa, GPL-3.0-or-later. The Gyrogate detection
-  and repair (`src/core/gyrogate`) is ported from FPV Flow.
+  and repair (`src/core/gyrogate`) and the color panel with `.cube` LUTs and adjustments (`src/core/color`,
+  `src/ui/menu/ColorLut.qml`) are ported from FPV Flow.
 - **[o4fix](https://github.com/vadimbryl/o4fix)**, by vadimbryl, MIT. FPV Flow's repair is a port of o4fix.
 
 ## Building

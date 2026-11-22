@@ -46,9 +46,13 @@ struct KernelParams {
     light_refraction_coefficient: f32, // 4
     plane_index:              i32, // 8
     output_projection:        i32, // 12
-    reserved2:                f32, // 16
+    lut_amount:               f32, // 16 - color LUT strength, 0..1
     ewa_coeffs_p:             vec4<f32>, // 16
     ewa_coeffs_q:             vec4<f32>, // 16
+    color_adjust1:            vec4<f32>, // 16 - exposure, luminance, contrast, highlights
+    color_adjust2:            vec4<f32>, // 16 - shadows, whites, blacks, temperature
+    color_adjust3:            vec4<f32>, // 16 - tint, saturation, vibrance, vignette
+    color_adjust4:            vec4<f32>, // 16 - sharpness, unused x3
 }
 
 @group(0) @binding(0) @fragment var<uniform> params: KernelParams;
@@ -58,10 +62,14 @@ struct KernelParams {
 @group(0) @binding(4) @fragment var<storage, read> drawing: array<u32>;
 // {texture_input}
 @group(0) @binding(5) @fragment var input_texture: texture_2d<SCALAR>;
+// The color LUT. It always exists - an identity table when none is loaded - so
+// that this binding never has to appear and disappear between pipelines.
+@group(0) @binding(6) @fragment var lut_texture: texture_3d<f32>;
 // {/texture_input}
 // {buffer_input}
 @group(0) @binding(5) @fragment var<storage, read> input_buffer: array<SCALAR>;
 @group(0) @binding(6) @fragment var<storage, read_write> output_buffer: array<SCALAR>;
+@group(0) @binding(7) @fragment var lut_texture: texture_3d<f32>;
 // {/buffer_input}
 
 LENS_MODEL_FUNCTIONS;
@@ -720,6 +728,182 @@ fn undistort_coord(position: vec2<f32>) -> vec2<f32> {
 // Adapted from OpenCV: initUndistortRectifyMap + remap
 // https://github.com/opencv/opencv/blob/2b60166e5c65f1caccac11964ad760d847c536e4/modules/calib3d/src/fisheye.cpp#L465-L567
 // https://github.com/opencv/opencv/blob/2b60166e5c65f1caccac11964ad760d847c536e4/modules/imgproc/src/opencl/remap.cl#L390-L498
+// Applies the color LUT with trilinear interpolation, done by hand.
+//
+// There is no sampler in this pipeline - every texture here is bound
+// unfilterable and read with textureLoad - so the eight surrounding texels are
+// fetched and blended explicitly. This mirrors Lut::sample in
+// core/color/lut/mod.rs, which is what the CPU path and the tests use.
+//
+// The input arrives in the pipeline's own scale (0..max_pixel_value), not 0..1,
+// so it is normalized before indexing and scaled back afterwards.
+fn apply_color_lut(pixel: vec4<f32>) -> vec4<f32> {
+    // With no LUT loaded the amount is 0, and this skips eight texture fetches
+    // per pixel - the identity table would have returned the input anyway.
+    if (params.lut_amount <= 0.0) { return pixel; }
+
+    let n = i32(textureDimensions(lut_texture).x);
+    let last = f32(n - 1);
+
+    let rgb = clamp(pixel.rgb / params.max_pixel_value, vec3<f32>(0.0), vec3<f32>(1.0));
+    let pos = rgb * last;
+    let base = vec3<i32>(floor(pos));
+    let f = pos - floor(pos);
+
+    let i0 = clamp(base,                    vec3<i32>(0), vec3<i32>(n - 1));
+    let i1 = clamp(base + vec3<i32>(1),     vec3<i32>(0), vec3<i32>(n - 1));
+
+    let c000 = textureLoad(lut_texture, vec3<i32>(i0.x, i0.y, i0.z), 0).rgb;
+    let c100 = textureLoad(lut_texture, vec3<i32>(i1.x, i0.y, i0.z), 0).rgb;
+    let c010 = textureLoad(lut_texture, vec3<i32>(i0.x, i1.y, i0.z), 0).rgb;
+    let c110 = textureLoad(lut_texture, vec3<i32>(i1.x, i1.y, i0.z), 0).rgb;
+    let c001 = textureLoad(lut_texture, vec3<i32>(i0.x, i0.y, i1.z), 0).rgb;
+    let c101 = textureLoad(lut_texture, vec3<i32>(i1.x, i0.y, i1.z), 0).rgb;
+    let c011 = textureLoad(lut_texture, vec3<i32>(i0.x, i1.y, i1.z), 0).rgb;
+    let c111 = textureLoad(lut_texture, vec3<i32>(i1.x, i1.y, i1.z), 0).rgb;
+
+    let c00 = mix(c000, c100, f.x);
+    let c10 = mix(c010, c110, f.x);
+    let c01 = mix(c001, c101, f.x);
+    let c11 = mix(c011, c111, f.x);
+
+    let c0 = mix(c00, c10, f.y);
+    let c1 = mix(c01, c11, f.y);
+
+    // Blended against the original, so the slider fades the grade in rather than
+    // switching it on. At 0 this returns the input bit for bit.
+    let graded = mix(c0, c1, f.z) * params.max_pixel_value;
+    return vec4<f32>(mix(pixel.rgb, graded, params.lut_amount), pixel.a);
+}
+
+// Per-pixel color adjustments, applied after the LUT.
+//
+// Mirrors core/color/adjustments.rs exactly - same order, same constants. That
+// module is the reference and carries the tests; this is a hand copy because the
+// project shares no code between backends.
+const LUMA_W: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
+const EXPOSURE_STOPS: f32 = 2.0;
+const LUMINANCE_GAIN: f32 = 0.5;
+const CONTRAST_PIVOT: f32 = 0.5;
+const TONAL_STRENGTH: f32 = 0.5;
+const WB_STRENGTH: f32 = 0.2;
+const VIGNETTE_INNER: f32 = 0.3;
+const VIGNETTE_OUTER: f32 = 1.0;
+
+// Rec.709 transfer functions. Exposure linearizes because light multiplies in
+// linear space; doing it on encoded values would lift midtones far too much.
+fn eotf_r709(v: f32) -> f32 {
+    if (v < 0.081) { return v / 4.5; }
+    return pow((v + 0.099) / 1.099, 1.0 / 0.45);
+}
+fn oetf_r709(v: f32) -> f32 {
+    if (v < 0.018) { return v * 4.5; }
+    return 1.099 * pow(v, 0.45) - 0.099;
+}
+fn eotf3(c: vec3<f32>) -> vec3<f32> { return vec3<f32>(eotf_r709(c.r), eotf_r709(c.g), eotf_r709(c.b)); }
+fn oetf3(c: vec3<f32>) -> vec3<f32> { return vec3<f32>(oetf_r709(c.r), oetf_r709(c.g), oetf_r709(c.b)); }
+
+// One tonal band: mixes its region toward white or black rather than adding a
+// raw offset, so the ends do not clip abruptly.
+fn tonal_band(c: vec3<f32>, amount: f32, e0: f32, e1: f32, invert: bool) -> vec3<f32> {
+    if (amount == 0.0) { return c; }
+    let l = dot(c, LUMA_W);
+    var mask = smoothstep(e0, e1, l);
+    if (invert) { mask = 1.0 - mask; }
+    let w = abs(amount) * mask * TONAL_STRENGTH;
+    // Named `dest`, not `target`: that is a reserved keyword in WGSL.
+    var dest = 0.0;
+    if (amount > 0.0) { dest = 1.0; }
+    return c + (vec3<f32>(dest) - c) * w;
+}
+
+fn apply_color_adjustments(pixel: vec4<f32>, out_pos: vec2<f32>) -> vec4<f32> {
+    let exposure   = params.color_adjust1.x;
+    let luminance  = params.color_adjust1.y;
+    let contrast   = params.color_adjust1.z;
+    let highlights = params.color_adjust1.w;
+    let shadows    = params.color_adjust2.x;
+    let whites     = params.color_adjust2.y;
+    let blacks     = params.color_adjust2.z;
+    let temperature= params.color_adjust2.w;
+    let tint       = params.color_adjust3.x;
+    let saturation = params.color_adjust3.y;
+    let vibrance   = params.color_adjust3.z;
+    let vignette   = params.color_adjust3.w;
+
+    if (exposure == 0.0 && luminance == 0.0 && contrast == 0.0 && highlights == 0.0 &&
+        shadows == 0.0 && whites == 0.0 && blacks == 0.0 && temperature == 0.0 &&
+        tint == 0.0 && saturation == 0.0 && vibrance == 0.0 && vignette == 0.0) {
+        return pixel;
+    }
+
+    var c = pixel.rgb / params.max_pixel_value;
+
+    // 1. Exposure, in stops, in linear light.
+    if (exposure != 0.0) {
+        c = oetf3(eotf3(max(c, vec3<f32>(0.0))) * exp2(exposure * EXPOSURE_STOPS));
+    }
+    // 2. Luminance: display-space gain, deliberately a different curve.
+    if (luminance != 0.0) { c *= 1.0 + luminance * LUMINANCE_GAIN; }
+    // 3. Contrast around middle grey.
+    if (contrast != 0.0) { c = (c - CONTRAST_PIVOT) * (1.0 + contrast) + CONTRAST_PIVOT; }
+    // 4-7. Tonal bands, darkest first.
+    c = tonal_band(c, blacks,     0.0,  0.25, true);
+    c = tonal_band(c, shadows,    0.0,  0.5,  true);
+    c = tonal_band(c, highlights, 0.5,  1.0,  false);
+    c = tonal_band(c, whites,     0.75, 1.0,  false);
+    // 8-9. White balance.
+    if (temperature != 0.0 || tint != 0.0) {
+        let t = temperature * WB_STRENGTH;
+        let g = tint * WB_STRENGTH;
+        c = vec3<f32>(c.r + t + g * 0.5, c.g - g, c.b - t + g * 0.5);
+    }
+    // 10. Saturation.
+    if (saturation != 0.0) {
+        let l = dot(c, LUMA_W);
+        c = vec3<f32>(l) + (c - vec3<f32>(l)) * (1.0 + saturation);
+    }
+    // 11. Vibrance: backs off where the pixel is already saturated.
+    if (vibrance != 0.0) {
+        let l = dot(c, LUMA_W);
+        let sat = clamp(max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b)), 0.0, 1.0);
+        c = vec3<f32>(l) + (c - vec3<f32>(l)) * (1.0 + vibrance * (1.0 - sat));
+    }
+    // 12. Vignette, aspect-corrected so the falloff is a circle.
+    if (vignette != 0.0) {
+        let size = vec2<f32>(f32(params.output_width), f32(params.output_height));
+        let aspect = size.x / max(size.y, 1.0);
+        let d = vec2<f32>((out_pos.x / max(size.x, 1.0) - 0.5) * aspect, out_pos.y / max(size.y, 1.0) - 0.5);
+        let v = smoothstep(VIGNETTE_OUTER, VIGNETTE_INNER, length(d) / length(vec2<f32>(0.5 * aspect, 0.5)));
+        c *= 1.0 - vignette * (1.0 - v);
+    }
+
+    return vec4<f32>(clamp(c, vec3<f32>(0.0), vec3<f32>(1.0)) * params.max_pixel_value, pixel.a);
+}
+
+// Unsharp mask, using the four neighbours in SOURCE space.
+//
+// The spec asks for sharpening on the stabilized frame. This shader only has
+// sample_input_at, which reads the source, so the neighbourhood is taken there
+// and warped along with the centre pixel. For the small radius a sharpen uses
+// the two differ only where the warp is extreme (strong fisheye at the corners),
+// and the alternative - redoing the warp per tap - is prohibitive.
+fn apply_sharpness(pixel: vec4<f32>, uv: vec2<f32>, jac: vec4<f32>) -> vec4<f32> {
+    let amount = params.color_adjust4.x;
+    if (amount <= 0.0) { return pixel; }
+
+    // One source pixel in each direction.
+    let blur = (pixel * 4.0
+              + sample_input_at(uv + vec2<f32>( 1.0, 0.0), jac)
+              + sample_input_at(uv + vec2<f32>(-1.0, 0.0), jac)
+              + sample_input_at(uv + vec2<f32>( 0.0, 1.0), jac)
+              + sample_input_at(uv + vec2<f32>( 0.0,-1.0), jac)) / 8.0;
+    let high = pixel - blur;
+    // K caps the strength so 100 % is strong but not haloed.
+    let sharpened = pixel + high * (amount * 1.5);
+    return vec4<f32>(clamp(sharpened.rgb, vec3<f32>(0.0), vec3<f32>(params.max_pixel_value)), pixel.a);
+}
+
 fn undistort(position: vec2<f32>) -> vec4<SCALAR> {
     let bg = vec4<f32>(params.background.x, params.background.y, params.background.z, params.background.w) * params.max_pixel_value;
 
@@ -790,6 +974,12 @@ fn undistort(position: vec2<f32>) -> vec4<SCALAR> {
             let c1 = sample_input_at(uv, jac);
             let c2 = sample_input_at(pt2, jac); // FIXME: jac should be adjusted for pt2
             pixel = c1 * alpha + c2 * (1.0 - alpha);
+            // Before the overlays, so drawing and the safe area keep their own
+            // colors. This branch returns early - forgetting it would leave part
+            // of the frame ungraded.
+            pixel = apply_sharpness(pixel, uv, jac);
+            pixel = apply_color_lut(pixel);
+            pixel = apply_color_adjustments(pixel, p);
             pixel = draw_pixel(pixel, u32(p.x), u32(p.y), false);
             pixel = draw_safe_area(pixel, p.x, p.y);
             return vec4<SCALAR>(pixel);
@@ -797,6 +987,9 @@ fn undistort(position: vec2<f32>) -> vec4<SCALAR> {
 
         pixel = sample_input_at(uv, jac);
     }
+    pixel = apply_sharpness(pixel, uv, jac);
+    pixel = apply_color_lut(pixel);
+    pixel = apply_color_adjustments(pixel, p);
     pixel = draw_pixel(pixel, u32(p.x), u32(p.y), false);
     pixel = draw_safe_area(pixel, p.x, p.y);
     return vec4<SCALAR>(pixel);

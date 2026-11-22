@@ -279,6 +279,15 @@ pub fn render<F, F2, F3>(stab: Arc<StabilizationManager>, progress: F, input_fil
         Interpolation::Bicubic  => ffmpeg_next::software::scaling::flag::Flags::BICUBIC,
        _ => ffmpeg_next::software::scaling::flag::Flags::LANCZOS,
     };
+    // Grading converts every frame to RGB and back on the CPU. Nothing is resized
+    // there, only chroma resampled, where Lanczos costs a lot of fps for little
+    // visible gain - so the fast filter is the default and the render's own filter
+    // is kept for the precise option.
+    let color_conversion_flags = if render_options.precise_color_conversion {
+        ffmpeg_interpolation
+    } else {
+        ffmpeg_next::software::scaling::flag::Flags::BILINEAR
+    };
 
     log::debug!("interpolation: {:?}", &interpolation);
     log::debug!("proc.gpu_device: {:?}", &proc.gpu_device);
@@ -295,6 +304,11 @@ pub fn render<F, F2, F3>(stab: Arc<StabilizationManager>, progress: F, input_fil
     proc.video.encoder_params.hw_device_type = encoder.2;
     proc.video.encoder_params.options.set("threads", "auto");
     proc.video.encoder_params.metadata = render_options.get_metadata_dict();
+    // A conversion LUT is what turns log into Rec.709, so the output has to say
+    // so - the tags are otherwise copied from the source and the file would
+    // still claim to be log. Gated on a LUT being loaded, because tagging
+    // unconverted footage as bt709 would be a lie in the other direction.
+    proc.video.encoder_params.force_bt709 = stab.stabilization.read().color_lut().is_some();
     proc.video.processing_order = order;
     log::debug!("video_codec: {:?}, processing_order: {:?}", &proc.video_codec, proc.video.processing_order);
 
@@ -519,6 +533,21 @@ pub fn render<F, F2, F3>(stab: Arc<StabilizationManager>, progress: F, input_fil
                     plane.share_wgpu_instances = true;
                     plane.set_device(stab.params.read().current_device as isize);
 
+                    // The color state lives on the manager's Stabilization, and
+                    // this is a fresh one per plane - without copying it across,
+                    // the export silently comes out ungraded while the preview
+                    // looks right.
+                    {
+                        let src = stab.stabilization.read();
+                        let lut = src.color_lut_arc();
+                        let amount = src.color_lut_amount();
+                        let adjustments = src.color_adjustments();
+                        drop(src);
+                        plane.set_color_lut(lut);
+                        plane.set_color_lut_amount(amount);
+                        plane.set_color_adjustments(adjustments);
+                    }
+
                     // Workaround for a bug in prores videotoolbox encoder
                     if $in_frame.format() == ffmpeg_next::format::Pixel::NV12 && is_prores_videotoolbox {
                         plane.kernel_flags.set(KernelParamsFlags::FIX_COLOR_RANGE, true);
@@ -570,6 +599,21 @@ pub fn render<F, F2, F3>(stab: Arc<StabilizationManager>, progress: F, input_fil
             };
         }
 
+        // Decided per frame, not once: `planes` is built only on the first frame,
+        // but the dispatch below runs every time and has to agree with it. Both
+        // read this same flag so they cannot drift apart.
+        let needs_rgb_for_lut = {
+            let src = stab.stabilization.read();
+            // The adjustments need all three channels of a pixel just as much as
+            // the LUT does - saturation, white balance and vibrance are all
+            // cross-channel - so grading with no LUT loaded has to take the same
+            // detour. Without this, an adjustments-only export silently does
+            // nothing on planar YUV.
+            let needs_rgb = src.color_lut().is_some() || !src.color_adjustments().is_identity();
+            drop(src);
+            needs_rgb && !matches!(input_frame.format(), Pixel::RGB24 | Pixel::RGBA | Pixel::RGB48BE | Pixel::RGBA64BE | Pixel::RGB48LE | Pixel::RGBA64LE)
+        };
+
         if planes.is_empty() {
             // Good reference about video formats: https://source.chromium.org/chromium/chromium/src/+/master:media/base/video_frame.cc
             // https://gist.github.com/Jim-Bar/3cbba684a71d1a9d468a6711a6eddbeb
@@ -583,6 +627,25 @@ pub fn render<F, F2, F3>(stab: Arc<StabilizationManager>, progress: F, input_fil
                 log::debug!("HW frame ({:?}) underlying format: {:?}", format, underlying_format);
                 format = underlying_format;
             }
+
+            // A 3D LUT maps a whole (r,g,b) triplet, but the kernel runs once per
+            // image plane: on 4:2:0 the Y plane is processed alone and the chroma
+            // planes are half resolution, so no shader ever sees the three
+            // channels of one pixel. Routing the frame through an RGB
+            // intermediate is what makes the LUT correct. It costs two sws passes
+            // per frame, so it only happens when a LUT is actually loaded.
+            //
+            // RGBA64LE, not BE: the RGBA16 pixel type reads u16 in native byte
+            // order, and every GPU this runs on is little-endian, so a
+            // big-endian frame arrives with both bytes of each channel swapped -
+            // 0x0123 read as 0x2301 - which comes out as colored noise. The
+            // match arms below still map RGBA64BE to RGBA16 the same way; that
+            // is upstream's, and it only ever worked because nothing reached it.
+            // 16-bit keeps 10 and 12 bit sources from being flattened to 8.
+            if needs_rgb_for_lut {
+                log::info!("Color grading active: routing {format:?} through RGBA64LE so the shader sees full RGB");
+                create_planes_proc!(planes, (RGBA16, input_frame, output_frame, 0, [], 65535.0), );
+            } else {
             match format {
                 Pixel::NV12 => {
                     create_planes_proc!(planes,
@@ -658,8 +721,13 @@ pub fn render<F, F2, F3>(stab: Arc<StabilizationManager>, progress: F, input_fil
                 Pixel::AYUV64LE => { create_planes_proc!(planes, (AYUV16, input_frame, output_frame, 0, [3,0,1,2], 65535.0), ); },
                 Pixel::RGB24    => { create_planes_proc!(planes, (RGB8,   input_frame, output_frame, 0, [], 255.0), ); },
                 Pixel::RGBA     => { create_planes_proc!(planes, (RGBA8,  input_frame, output_frame, 0, [], 255.0), ); },
+                // RGB16/RGBA16 read u16 in native (little-endian) order, so the
+                // LE variants are the ones that are actually correct here. The
+                // BE arms are upstream's and are kept as they were.
                 Pixel::RGB48BE  => { create_planes_proc!(planes, (RGB16,  input_frame, output_frame, 0, [], 65535.0), ); },
                 Pixel::RGBA64BE => { create_planes_proc!(planes, (RGBA16, input_frame, output_frame, 0, [], 65535.0), ); },
+                Pixel::RGB48LE  => { create_planes_proc!(planes, (RGB16,  input_frame, output_frame, 0, [], 65535.0), ); },
+                Pixel::RGBA64LE => { create_planes_proc!(planes, (RGBA16, input_frame, output_frame, 0, [], 65535.0), ); },
                 format => { // All other convert to YUV444P16LE
                     ::log::info!("Unknown format {:?}, converting to YUV444P16LE", format);
                     // Go through 4:4:4 because of even plane dimensions
@@ -671,6 +739,7 @@ pub fn render<F, F2, F3>(stab: Arc<StabilizationManager>, progress: F, input_fil
                         );
                     })?;
                 }
+            }
             }
         }
         if planes.is_empty() {
@@ -684,6 +753,16 @@ pub fn render<F, F2, F3>(stab: Arc<StabilizationManager>, progress: F, input_fil
             progress2((process_frame as f64 / render_frame_count as f64, process_frame, render_frame_count, false, false));
         };
 
+        if needs_rgb_for_lut {
+            // Must match the plane set built above for this same flag, byte
+            // order included - see the comment there on why this is LE.
+            converter.convert_pixel_format(input_frame, output_frame, Pixel::RGBA64LE, color_conversion_flags, |converted_frame, converted_output| {
+                undistort_frame(converted_frame, converted_output);
+            })?;
+            process_frame += 1;
+            return Ok(());
+        }
+
         match input_frame.format() {
             Pixel::VIDEOTOOLBOX | // Pixel::D3D11 |
             Pixel::NV12 | Pixel::NV21 | Pixel::YUV420P | Pixel::YUVJ420P |
@@ -693,7 +772,7 @@ pub fn render<F, F2, F3>(stab: Arc<StabilizationManager>, progress: F, input_fil
             Pixel::YUV444P10LE | Pixel::YUV444P12LE | Pixel::YUV444P14LE | Pixel::YUV444P16LE |
             Pixel::YUVA444P10LE | Pixel::YUVA444P12LE | Pixel::YUVA444P16LE |
             Pixel::AYUV64LE | Pixel::GBRAPF32LE | Pixel::GBRPF32LE |
-            Pixel::RGB24 | Pixel::RGBA | Pixel::RGB48BE | Pixel::RGBA64BE => {
+            Pixel::RGB24 | Pixel::RGBA | Pixel::RGB48BE | Pixel::RGBA64BE | Pixel::RGB48LE | Pixel::RGBA64LE => {
                 undistort_frame(input_frame, output_frame)
             },
             _ => {

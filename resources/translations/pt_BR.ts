@@ -574,6 +574,190 @@ Você pode aumentar o limite de nitidez na seção Avançado.</translation>
     </message>
   </context>
   <context>
+    <name>ColorLut</name>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="22"/>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="63"/>
+      <source>Color</source>
+      <translation>Cor</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="40"/>
+      <source>%1 - %2³ entries</source>
+      <translation>%1 - %2³ entradas</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="41"/>
+      <source>%1³ entries</source>
+      <translation>%1³ entradas</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="54"/>
+      <source>Light</source>
+      <translation>Luz</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="55"/>
+      <source>Exposure</source>
+      <translation>Exposição</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="56"/>
+      <source>Luminance</source>
+      <translation>Luminância</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="57"/>
+      <source>Contrast</source>
+      <translation>Contraste</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="58"/>
+      <source>Highlights</source>
+      <translation>Realces</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="59"/>
+      <source>Shadows</source>
+      <translation>Sombras</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="60"/>
+      <source>Whites</source>
+      <translation>Brancos</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="61"/>
+      <source>Blacks</source>
+      <translation>Pretos</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="64"/>
+      <source>Temperature</source>
+      <translation>Temperatura</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="65"/>
+      <source>Tint</source>
+      <translation>Matiz</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="66"/>
+      <source>Saturation</source>
+      <translation>Saturação</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="67"/>
+      <source>Vibrance</source>
+      <translation>Vivacidade</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="69"/>
+      <source>Effect</source>
+      <translation>Efeito</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="70"/>
+      <source>Sharpness</source>
+      <translation>Nitidez</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="71"/>
+      <source>Vignette</source>
+      <translation>Vinheta</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="156"/>
+      <source>Filmed in a flat color profile, like DJI D-Log M? Load its LUT (a .cube color file) and the video gets normal colors. The exported file comes out with the color already applied, no editor needed.</source>
+      <translation>Gravou em perfil de cor plano, como o D-Log M da DJI? Carregue o LUT dele (um arquivo de cor .cube) e o vídeo fica com as cores normais. O arquivo exportado já sai com a cor aplicada, sem precisar de editor.</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="161"/>
+      <source>Choose a LUT file</source>
+      <translation>Escolha um arquivo de LUT</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="162"/>
+      <source>LUT files</source>
+      <translation>Arquivos de LUT</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="171"/>
+      <source>Library</source>
+      <translation>Biblioteca</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="177"/>
+      <source>Choose a LUT...</source>
+      <translation>Escolha um LUT...</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="191"/>
+      <source>Choose the LUT folder</source>
+      <translation>Escolha a pasta de LUTs</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="200"/>
+      <source>Change LUT folder</source>
+      <translation>Trocar pasta de LUTs</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="200"/>
+      <source>Set LUT folder</source>
+      <translation>Definir pasta de LUTs</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="203"/>
+      <source>The .cube files in this folder are listed above. The folder is remembered between sessions.</source>
+      <translation>Os arquivos .cube desta pasta aparecem na lista acima. A pasta fica salva entre as sessões.</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="208"/>
+      <source>Replace LUT</source>
+      <translation>Substituir LUT</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="208"/>
+      <source>Load LUT</source>
+      <translation>Carregar LUT</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="230"/>
+      <source>This file could not be used as a LUT: %1</source>
+      <translation>Não deu para usar este arquivo como LUT: %1</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="264"/>
+      <source>Intensity</source>
+      <translation>Intensidade</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="285"/>
+      <source>Remove LUT</source>
+      <translation>Remover LUT</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="303"/>
+      <source>Precise color conversion (slower export)</source>
+      <translation>Conversão de cor precisa (exportação mais lenta)</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="304"/>
+      <source>Colors a tiny bit more exact, but the export gets much slower. Leave it off unless you see a difference.</source>
+      <translation>Cores um pouquinho mais exatas, mas a exportação fica bem mais lenta. Deixe desligado, a não ser que você veja diferença.</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="317"/>
+      <source>Color adjustments</source>
+      <translation>Ajustes de cor</translation>
+    </message>
+    <message>
+      <location filename="../../src/ui/menu/ColorLut.qml" line="358"/>
+      <source>Reset adjustments</source>
+      <translation>Redefinir ajustes</translation>
+    </message>
+  </context>
+  <context>
     <name>DropTarget</name>
     <message>
       <location filename="../../src/ui/components/DropTarget.qml" line="20"/>

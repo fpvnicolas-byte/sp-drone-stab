@@ -79,9 +79,13 @@ pub struct KernelParams {
     pub light_refraction_coefficient: f32, // 4
     pub plane_index:              i32, // 8
     pub output_projection:        i32, // 12
-    pub reserved2:                f32, // 16
+    pub lut_amount:               f32, // 16 - color LUT strength, 0..1
     pub ewa_coeffs_p:             Vec4, // 16
     pub ewa_coeffs_q:             Vec4, // 16
+    pub color_adjust1:            Vec4, // 16 - exposure, luminance, contrast, highlights
+    pub color_adjust2:            Vec4, // 16 - shadows, whites, blacks, temperature
+    pub color_adjust3:            Vec4, // 16 - tint, saturation, vibrance, vignette
+    pub color_adjust4:            Vec4, // 16 - sharpness, unused x3
 }
 
 // #[inline] pub fn fast_floor(x: f32) -> i32 { x as i32 }
