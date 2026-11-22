@@ -4,8 +4,10 @@ name: Qt shaders and translations
 # Portuguese translation (resources/translations/pt_BR.qm) are binary files kept
 # in the repository. This builds them with Qt 6.4.3, whose qsb writes the .qsb
 # version every platform's Qt can read, and uploads them as the "qt-assets"
-# artifact, so a shader or .ts change can be checked and the binaries refreshed
-# without a local Qt install. It never commits anything itself.
+# artifact and commits them to the branch when they changed, so a shader or .ts
+# change needs no local Qt install. (Authorized by Nicolas on 2026-11-16 for the
+# PR branch.) The commit is made with GITHUB_TOKEN, so it doesn't start other
+# workflows by itself.
 
 on:
   push:
@@ -19,7 +21,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -65,3 +67,14 @@ jobs:
           path: |
             src/qt_gpu/compiled/*.qsb
             resources/translations/pt_BR.qm
+
+      - name: Commit the rebuilt files to this branch
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        run: |
+          git add src/qt_gpu/compiled/*.qsb resources/translations/pt_BR.qm
+          if git diff --cached --quiet; then echo "Already up to date"; exit 0; fi
+          git diff --cached --stat
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Rebuild the Qt preview shaders and pt_BR.qm with Qt 6.4.3"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
