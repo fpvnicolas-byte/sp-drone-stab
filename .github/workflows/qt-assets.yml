@@ -22,6 +22,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   build:
@@ -78,3 +79,8 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "Rebuild the Qt preview shaders and pt_BR.qm with Qt 6.4.3"
           git push origin "HEAD:${GITHUB_REF_NAME}"
+          # A push made with GITHUB_TOKEN starts no workflows, so the app build would
+          # otherwise keep the old shaders. Start it on the new commit by hand.
+          gh workflow run release.yml --ref "${GITHUB_REF_NAME}"
+        env:
+          GH_TOKEN: ${{ github.token }}
